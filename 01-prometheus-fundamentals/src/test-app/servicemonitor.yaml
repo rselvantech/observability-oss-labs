@@ -1,0 +1,35 @@
+# src/test-app/servicemonitor.yaml
+#
+# ServiceMonitor is a CRD installed by the Prometheus Operator.
+# When you apply this manifest, the Operator will:
+#   1. Find this ServiceMonitor via its cluster-wide watch
+#   2. Query the Kubernetes API for Service endpoints matching spec.selector
+#   3. Generate a prometheus.yaml scrape_config with the actual pod IPs
+#   4. POST to Prometheus /-/reload (no Prometheus restart required)
+#   5. Prometheus starts scraping the matched endpoints within 30 seconds
+#   6. When pods are replaced with new IPs, the Operator regenerates config
+#
+# This is the self-service model — no central team, no prometheus.yaml editing.
+#
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: test-app
+  namespace: default
+spec:
+  # Select the Service to monitor by matching its labels
+  selector:
+    matchLabels:
+      app: test-app # matches the Service in service.yaml
+
+  # Where to find /metrics on the matched Service
+  endpoints:
+    - port: http-metrics # named port from service.yaml (not port number)
+      path: /metrics # the path Prometheus will GET
+      interval: 15s # how often to scrape
+      scrapeTimeout: 10s # timeout per scrape — must be less than interval
+
+  # Which namespaces to look in for matching Services
+  namespaceSelector:
+    matchNames:
+      - default

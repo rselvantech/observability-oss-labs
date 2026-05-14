@@ -1,0 +1,135 @@
+# src/values.yaml
+# kube-prometheus-stack custom values
+# Chart: 84.5.0  |  Prometheus: 3.4.1  |  Grafana: 12.3.0
+#
+# Only settings that differ from chart defaults are shown.
+# View full defaults: helm show values prometheus-community/kube-prometheus-stack --version 84.5.0
+
+# ── Prometheus ───────────────────────────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    # How often Prometheus scrapes each target.
+    # 15s is the production standard: fine enough for alerting,
+    # coarse enough to keep data volume manageable.
+    scrapeInterval: "15s"
+
+    # How often to evaluate alerting and recording rules.
+    # Must equal or exceed scrapeInterval so rules run against fresh data.
+    evaluationInterval: "15s"
+
+    # How long to keep data locally.
+    # 10d is appropriate for demos. Production: 15-30d local + Mimir for long-term.
+    retention: 10d
+
+    # Persist TSDB data across pod restarts.
+    # Without this, ALL metrics are lost when the Prometheus pod restarts
+    # (version upgrade, node eviction, OOMKill — all destroy data).
+    # Minikube provisions hostPath volumes via the 'standard' StorageClass.
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+    # Allow Prometheus to discover ServiceMonitors in ALL namespaces.
+    # Default (true) restricts discovery to ServiceMonitors labelled with
+    # the same Helm release name — too restrictive for cross-namespace monitoring.
+    # Set false so application teams can create ServiceMonitors in their own
+    # namespaces without needing to add the Helm release label.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    # Resource limits sized for a 4-CPU / 8GB Minikube node.
+    # Production sizing: use prometheus_tsdb_head_series × 3KB to estimate RAM.
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+    # Prometheus 3.x: native histograms
+    # More accurate than classic histograms, uses dynamic buckets, lower cardinality.
+    # Safe to enable: classic histogram format continues to work alongside it.
+    enableFeatures:
+      - native-histograms
+
+# ── Alertmanager ─────────────────────────────────────────────────────────────
+alertmanager:
+  alertmanagerSpec:
+    # Persist silence state across restarts.
+    # Without this, all configured silences are lost when the pod restarts.
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 1Gi
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+# ── Grafana ───────────────────────────────────────────────────────────────────
+grafana:
+  # Admin credentials.
+  # In production: use adminCredentialsSecret to reference a Kubernetes Secret.
+  # Never put credentials in values.yaml in a real environment.
+  adminPassword: "observability-demo"
+
+  # Persist Grafana database (dashboards, users, alert rules) across restarts.
+  persistence:
+    enabled: true
+    size: 1Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Grafana 11.x: unified alerting is the only supported engine.
+  # Legacy alerting was removed in Grafana 11. These settings make it explicit.
+  grafana.ini:
+    unified_alerting:
+      enabled: true
+    alerting:
+      enabled: false
+
+# ── Node Exporter ─────────────────────────────────────────────────────────────
+nodeExporter:
+  # Exposes host-level metrics: CPU, memory, disk, network, filesystem.
+  # Runs as a DaemonSet (one pod per node).
+  # Port 9100. Listens on /metrics.
+  # The Operator auto-creates a ServiceMonitor for it on install.
+  enabled: true
+
+# ── kube-state-metrics ────────────────────────────────────────────────────────
+kubeStateMetrics:
+  # Talks to the Kubernetes API server and exposes object state as metrics.
+  # Covers: pod count, deployment replicas, resource limits, PVC status, events.
+  # Different from Node Exporter:
+  #   Node Exporter = host OS metrics (from /proc, /sys)
+  #   kube-state-metrics = Kubernetes API object state (from kube-apiserver)
+  enabled: true
+
+# ── Prometheus Operator ───────────────────────────────────────────────────────
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

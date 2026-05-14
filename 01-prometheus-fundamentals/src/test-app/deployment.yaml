@@ -1,0 +1,58 @@
+# src/test-app/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: default
+  labels:
+    app: test-app
+    version: "6.7.1"
+spec:
+  replicas: 3 # 3 replicas so we can observe per-pod metrics
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+        version: "6.7.1"
+    spec:
+      containers:
+        - name: test-app
+          image: ghcr.io/stefanprodan/podinfo:6.7.1
+          ports:
+            - name: http # HTTP API port
+              containerPort: 9898
+            - name: http-metrics # Prometheus /metrics port
+              containerPort: 9797
+            - name: grpc # gRPC port
+              containerPort: 9999
+          env:
+            - name: PODINFO_UI_MESSAGE
+              value: "Hello from Observability Demo 01"
+            - name: PODINFO_PORT_METRICS # ← this is the only addition
+              value: "9797"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          # Liveness probe — pod restarts if this fails
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9898
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          # Readiness probe — pod receives traffic only when this passes
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9898
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
