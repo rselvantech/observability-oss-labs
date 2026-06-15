@@ -1,23 +1,41 @@
 # Demo 00: Kube-Prometheus-Stack — Complete Reference Guide
 
-This document is the companion reference to [Demo 01](./README.md).
-While the demo README focuses on hands-on steps, this guide covers everything
-you need to understand, operate, secure, and scale kube-prometheus-stack in
-depth — from the identity and governance of every component, through its
-internals, configuration, CRDs, RBAC, HA patterns, and production practices.
+## Purpose of This Document
 
-**Read this document when:**
-- You want to understand who built each component, how it is governed, and whether it is safe to depend on in a professional environment
-- You want to understand what the Helm chart actually installs and why
-- You need to debug a component or verify its configuration
-- You are designing a production deployment and need to understand HA, multi-tenancy, or storage options
-- You want to understand how all components interwork at the message level
-- You need to understand RBAC and what permissions each component holds
+This is **Demo 00** — the foundation document for the entire
+`opensource-observability-labs` demo series. It is not a hands-on lab
+with step-by-step commands. It is the conceptual and architectural reference
+that sets the stage for every demo that follows (Demo 01 through Demo 25).
+
+Read this before starting Demo 01. Return to it whenever you need to
+understand *why* something works the way it does — the internals, the
+governance, the security posture, and the production patterns behind
+the stack you are building.
+
+**This document covers:**
+- Who built kube-prometheus-stack, who maintains it, and its history
+- The identity and governance of every component in the stack
+- What the Helm chart actually installs — complete inventory with real outputs
+- Component internals — how each piece works under the hood
+- CRDs, configuration, RBAC, and message flows
+- HA patterns, multi-tenancy, multi-cluster, and storage options
+- CLI tools used across all 25 demos in this series
+- Security posture — honest assessment before you depend on this in production
 
 **Related documents:**
-- [Demo 01 README](./README.md) — hands-on lab steps
+- [Demo 01 README](./README.md) — first hands-on lab: Prometheus first scrape
 - [Project root README](../README.md) — full 25-demo roadmap and stack rationale
 
+---
+
+## Directory Structure
+
+```
+00-kube-prometheus-stack/
+├── README.md                               # this file
+├── 00-kube-prometheus-stack-anki.csv # Anki flash cards (embedded in README Appendix)
+└── 00-kube-prometheus-stack-quiz.md  # Quiz (embedded in README Appendix)
+```
 ---
 
 ## Contents
@@ -38,7 +56,11 @@ internals, configuration, CRDs, RBAC, HA patterns, and production practices.
 14. [Multi-Tenancy and Multi-Cluster](#14-multi-tenancy-and-multi-cluster)
 15. [Storage Solutions](#15-storage-solutions)
 16. [Release Alignment — Chart vs Component Versions](#16-release-alignment--chart-vs-component-versions)
-17. [Official Resources](#17-official-resources)
+17. [Key-takeaways](#key-takeaways)
+18. [Interview Preparation](#interview-prep)
+19. [Official Resources](#resources)
+20. [Appendix--anki-cards](#appendix--anki-cards)
+21. [Appendix--quiz](#appendix--quiz)
 
 ---
 
@@ -161,28 +183,28 @@ kube-prometheus-stack installs and pre-wires six components. Each is an
 independent open-source project from a different organisation:
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Component             │  Owner                  │  Role in the stack        │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  Prometheus Operator   │  prometheus-operator org │  Manages all components  │
-│                        │  (Red Hat primary)        │  via CRDs, generates     │
-│                        │                           │  configs automatically   │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  Prometheus            │  CNCF Graduated           │  Metrics TSDB, scraper,  │
-│                        │  (SoundCloud origin)      │  PromQL engine, alerting │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  Alertmanager          │  CNCF Graduated           │  Alert deduplication,    │
-│                        │  (Prometheus project)     │  grouping, routing       │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  Grafana               │  Grafana Labs             │  Dashboards, panels,     │
-│                        │  (AGPLv3)                 │  unified alerting UI     │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  Node Exporter         │  CNCF Graduated           │  Host OS metrics from    │
-│                        │  (Prometheus project)     │  /proc and /sys          │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  kube-state-metrics    │  Kubernetes SIG-          │  Kubernetes API object   │
-│                        │  instrumentation          │  state as metrics        │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│  Component             │  Owner                    │  Role in the stack        │
+├────────────────────────────────────────────────────────────────────────────────┤
+│  Prometheus Operator   │  prometheus-operator org  │  Manages all components   │
+│                        │  (Red Hat primary)        │  via CRDs, generates      │
+│                        │                           │  configs automatically    │
+├────────────────────────────────────────────────────────────────────────────────┤
+│  Prometheus            │  CNCF Graduated           │  Metrics TSDB, scraper,   │
+│                        │  (SoundCloud origin)      │  PromQL engine, alerting  │
+├────────────────────────────────────────────────────────────────────────────────┤
+│  Alertmanager          │  CNCF Graduated           │  Alert deduplication,     │
+│                        │  (Prometheus project)     │  grouping, routing        │
+├────────────────────────────────────────────────────────────────────────────────┤
+│  Grafana               │  Grafana Labs             │  Dashboards, panels,      │
+│                        │  (AGPLv3)                 │  unified alerting UI      │
+├────────────────────────────────────────────────────────────────────────────────┤
+│  Node Exporter         │  CNCF Graduated           │  Host OS metrics from     │
+│                        │  (Prometheus project)     │  /proc and /sys           │
+├────────────────────────────────────────────────────────────────────────────────┤
+│  kube-state-metrics    │  Kubernetes SIG-          │  Kubernetes API object    │
+│                        │  instrumentation          │  state as metrics         │
+└────────────────────────────────────────────────────────────────────────────────┘
 
 Versions in chart 84.5.0 (May 2026):
   Prometheus Operator  v0.90.1   │  Prometheus     3.4.1
@@ -234,14 +256,14 @@ kube-state-metrics no** — but both are tightly integrated into the Prometheus 
 │  Node Exporter                                                               │
 │                                                                              │
 │  Maintained by: the Prometheus project itself                                │
-│  GitHub:        github.com/prometheus/node_exporter                         │
-│  CNCF status:   Part of the CNCF Graduated Prometheus project               │
+│  GitHub:        github.com/prometheus/node_exporter                          │
+│  CNCF status:   Part of the CNCF Graduated Prometheus project                │
 │  License:       Apache 2.0                                                   │
 │                                                                              │
 │  Node Exporter lives under the prometheus GitHub organisation — the same     │
-│  organisation that owns Prometheus, Alertmanager, and Pushgateway.          │
-│  It is an official first-party Prometheus sub-project.                      │
-│  The Prometheus maintainers review and merge its releases.                  │
+│  organisation that owns Prometheus, Alertmanager, and Pushgateway.           │
+│  It is an official first-party Prometheus sub-project.                       │
+│  The Prometheus maintainers review and merge its releases.                   │
 │                                                                              │
 │  Relationship: it is the "official Linux OS metrics exporter" for Prometheus │
 │  in the same way Alertmanager is the "official alert router" for Prometheus. │
@@ -251,17 +273,17 @@ kube-state-metrics no** — but both are tightly integrated into the Prometheus 
 │  kube-state-metrics                                                          │
 │                                                                              │
 │  Maintained by: Kubernetes SIG-instrumentation                               │
-│  GitHub:        github.com/kubernetes/kube-state-metrics                    │
-│  CNCF status:   Part of the Kubernetes project (CNCF Graduated)             │
+│  GitHub:        github.com/kubernetes/kube-state-metrics                     │
+│  CNCF status:   Part of the Kubernetes project (CNCF Graduated)              │
 │  License:       Apache 2.0                                                   │
 │                                                                              │
 │  kube-state-metrics lives under the kubernetes GitHub organisation —         │
-│  not under prometheus. It is a Kubernetes SIG project, not a Prometheus     │
-│  project. SIG-instrumentation owns it and drives its development.           │
+│  not under prometheus. It is a Kubernetes SIG project, not a Prometheus      │
+│  project. SIG-instrumentation owns it and drives its development.            │
 │                                                                              │
-│  Relationship: it is a Kubernetes-native exporter that produces metrics     │
-│  in Prometheus format. It depends on Prometheus for consumption but is      │
-│  not owned or governed by the Prometheus project.                           │
+│  Relationship: it is a Kubernetes-native exporter that produces metrics      │
+│  in Prometheus format. It depends on Prometheus for consumption but is       │
+│  not owned or governed by the Prometheus project.                            │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -286,16 +308,16 @@ governance, and different levels of formal backing.
 │                evaluator. A single Go binary you can run anywhere.          │
 │                                                                             │
 │  Origin:       Built at SoundCloud in 2012 by Matt Proud and Julius Volz    │
-│                to solve the problem of monitoring microservices at scale.    │
+│                to solve the problem of monitoring microservices at scale.   │
 │                Donated to CNCF in May 2016.                                 │
 │                                                                             │
-│  CNCF status:  GRADUATED — August 9, 2018.                                 │
+│  CNCF status:  GRADUATED — August 9, 2018.                                  │
 │                Second ever CNCF project to graduate, after Kubernetes.      │
 │                Graduation requires: security audit, structured governance,  │
 │                thriving adoption, and a code of conduct. All met.           │
 │                                                                             │
 │  Governance:   Self-selected team of active contributors. No single company │
-│                controls it. Contributors include engineers from Google,      │
+│                controls it. Contributors include engineers from Google,     │
 │                Red Hat, AWS, Grafana Labs, Spotify, Apple, and IBM.         │
 │                                                                             │
 │  License:      Apache 2.0                                                   │
@@ -314,7 +336,7 @@ governance, and different levels of formal backing.
 │                Red Hat acquired CoreOS in 2018 and donated the project to   │
 │                the independent prometheus-operator GitHub organisation.     │
 │                                                                             │
-│  CNCF status:  NOT a CNCF project — community maintained.                  │
+│  CNCF status:  NOT a CNCF project — community maintained.                   │
 │                Lives under the prometheus-operator GitHub org, independent  │
 │                of both CNCF and any single company.                         │
 │                                                                             │
@@ -323,8 +345,8 @@ governance, and different levels of formal backing.
 │                of every OpenShift cluster worldwide — they have a direct    │
 │                commercial interest in its quality and security.             │
 │                                                                             │
-│  Note on API:  CRD group is monitoring.coreos.com — the coreos.com name    │
-│                remains as a historical artefact. Renaming a CRD API group  │
+│  Note on API:  CRD group is monitoring.coreos.com — the coreos.com name     │
+│                remains as a historical artefact. Renaming a CRD API group   │
 │                is a breaking change that would require every existing       │
 │                ServiceMonitor and PrometheusRule in every cluster worldwide │
 │                to be updated. The community kept the name intentionally.    │
@@ -344,7 +366,7 @@ governance, and different levels of formal backing.
 │                the kube-prometheus jsonnet project. Moved to the            │
 │                prometheus-community GitHub organisation.                    │
 │                                                                             │
-│  CNCF status:  NOT a CNCF project.                                         │
+│  CNCF status:  NOT a CNCF project.                                          │
 │                Maintained by the prometheus-community volunteer org.        │
 │                This is a community Helm chart — not a CNCF artifact.        │
 │                                                                             │
@@ -357,7 +379,7 @@ governance, and different levels of formal backing.
 │  License:      Apache 2.0                                                   │
 │  GitHub:       github.com/prometheus-community/helm-charts                  │
 │  ArtifactHub:  artifacthub.io/packages/helm/prometheus-community/           │
-│                kube-prometheus-stack                                         │
+│                kube-prometheus-stack                                        │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -407,21 +429,21 @@ that share the Grafana name:
 │                dashboards. Does NOT store any metric, log, or trace data    │
 │                itself. It is purely a query and visualisation layer.        │
 │                                                                             │
-│  Origin:       Created by Torkel Ödegaard in 2014. Always open source.     │
+│  Origin:       Created by Torkel Ödegaard in 2014. Always open source.      │
 │                                                                             │
-│  Licence:      AGPLv3 since 2021 (previously Apache 2.0)                   │
+│  Licence:      AGPLv3 since 2021 (previously Apache 2.0)                    │
 │                AGPLv3 means: if you modify Grafana and run it as a service  │
 │                for others, you must publish your modifications.             │
-│                Running Grafana internally (not as a SaaS) is unrestricted. │
+│                Running Grafana internally (not as a SaaS) is unrestricted.  │
 │                                                                             │
 │  Architecture: Single Go binary + React/TypeScript frontend                 │
 │                Plugin system: data source plugins, panel plugins, app plugins│
 │                100+ data source plugins: Prometheus, Loki, Tempo, Mimir,    │
 │                CloudWatch, PostgreSQL, MySQL, Elasticsearch, and more.      │
 │                Grafana does not store data — it queries backends at render  │
-│                time and combines results from multiple sources in one panel. │
+│                time and combines results from multiple sources in one panel.│
 │                                                                             │
-│  Version used in this demo series: Grafana 11.6.0                          │
+│  Version used in this demo series: Grafana 12.3.0                           │
 │  GitHub: github.com/grafana/grafana                                         │
 │  Licence: AGPLv3                                                            │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -429,17 +451,17 @@ that share the Grafana name:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  2. Grafana Enterprise  (commercial edition of Grafana OSS)                 │
 │                                                                             │
-│  What it adds: Features gated behind a commercial licence on top of OSS:   │
+│  What it adds: Features gated behind a commercial licence on top of OSS:    │
 │    - SAML and LDAP team synchronisation                                     │
 │    - Data source permissions (restrict which team sees which data source)   │
 │    - Audit logging (who queried what, when)                                 │
 │    - Reporting (scheduled PDF dashboard exports)                            │
 │    - Enhanced RBAC with fine-grained dashboard and folder permissions       │
-│    - Premium data source plugins: Datadog, Splunk, New Relic, Dynatrace    │
+│    - Premium data source plugins: Datadog, Splunk, New Relic, Dynatrace     │
 │    - Enterprise support with SLAs                                           │
 │                                                                             │
 │  Same binary as OSS — Enterprise features unlock with a licence key.        │
-│  Relevant for: regulated industries (finance, healthcare, government)        │
+│  Relevant for: regulated industries (finance, healthcare, government)       │
 │  where audit trails, SAML SSO, and data access control are mandatory.       │
 │                                                                             │
 │  In this demo series: we use OSS only. Enterprise features are noted where  │
@@ -449,12 +471,12 @@ that share the Grafana name:
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  3. Grafana Cloud  (fully managed SaaS platform)                            │
 │                                                                             │
-│  What it is:   Grafana Labs hosts and operates the entire LGTM+ stack for  │
+│  What it is:   Grafana Labs hosts and operates the entire LGTM+ stack for   │
 │                you. You send telemetry data to Grafana Cloud endpoints.     │
 │                Grafana Labs manages scaling, upgrades, and availability.    │
 │                                                                             │
-│  Components:   Grafana (dashboards) + Mimir (metrics) + Loki (logs) +      │
-│                Tempo (traces) + Pyroscope (profiles) + OnCall (incidents)  │
+│  Components:   Grafana (dashboards) + Mimir (metrics) + Loki (logs) +       │
+│                Tempo (traces) + Pyroscope (profiles) + OnCall (incidents)   │
 │                + Synthetic Monitoring — all managed.                        │
 │                                                                             │
 │  Pricing:      Free tier (10,000 metric series, 50GB logs/traces).          │
@@ -464,8 +486,8 @@ that share the Grafana name:
 │  Relevant for: teams who want zero operational overhead for the stack.      │
 │  Trade-off:    data leaves your infrastructure (GDPR/residency concern).    │
 │                                                                             │
-│  In this demo series: we self-host everything. The skills transfer         │
-│  directly to Grafana Cloud — same query languages, same dashboards.        │
+│  In this demo series: we self-host everything. The skills transfer          │
+│  directly to Grafana Cloud — same query languages, same dashboards.         │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -487,36 +509,36 @@ Understanding each component's origin clarifies its maturity and governance:
 │  (logs)          │  Inspired by Prometheus — "like Prometheus, but for logs"│
 │                  │  Label-based index — cheap object storage backend       │
 │                  │  Licence: AGPLv3                                        │
-│                  │  Covered in: Demos 05, 06, 15, 21                      │
+│                  │  Covered in: Demos 05, 06, 15, 21                       │
 ├──────────────────┼─────────────────────────────────────────────────────────┤
 │  Grafana Alloy   │  Replaces Promtail (EOL Mar 2026) + Grafana Agent       │
-│  (collection)    │  (deprecated Nov 2025). OTel Collector distribution.   │
+│  (collection)    │  (deprecated Nov 2025). OTel Collector distribution.    │
 │                  │  Vendor-neutral — routes to any OTel-compatible backend │
 │                  │  Licence: Apache 2.0                                    │
-│                  │  Covered in: Demos 05, 09, 16                          │
+│                  │  Covered in: Demos 05, 09, 16                           │
 ├──────────────────┼─────────────────────────────────────────────────────────┤
 │  Grafana Tempo   │  Built by Grafana Labs (2021)                           │
 │  (traces)        │  Object storage only — no Elasticsearch/Cassandra needed│
 │                  │  TraceQL — purpose-built trace query language           │
 │                  │  Licence: AGPLv3                                        │
-│                  │  Covered in: Demos 09, 10                              │
+│                  │  Covered in: Demos 09, 10                               │
 ├──────────────────┼─────────────────────────────────────────────────────────┤
-│  Grafana Mimir   │  Announced March 2022 — fork of Cortex (CNCF project)  │
+│  Grafana Mimir   │  Announced March 2022 — fork of Cortex (CNCF project)   │
 │  (long-term      │  Previously commercial-only features open-sourced       │
-│   metrics)       │  Scales to 1 billion active series                     │
+│   metrics)       │  Scales to 1 billion active series                      │
 │                  │  Licence: AGPLv3                                        │
-│                  │  Covered in: Demo 22                                   │
+│                  │  Covered in: Demo 22                                    │
 ├──────────────────┼─────────────────────────────────────────────────────────┤
 │  Grafana         │  Acquired from Pyroscope Inc (2023)                     │
-│  Pyroscope       │  Merged with Grafana Phlare into one codebase          │
-│  (profiling)     │  eBPF auto-profiling — no code changes required        │
+│  Pyroscope       │  Merged with Grafana Phlare into one codebase           │
+│  (profiling)     │  eBPF auto-profiling — no code changes required         │
 │                  │  Licence: AGPLv3                                        │
-│                  │  Covered in: Demo 23                                   │
+│                  │  Covered in: Demo 23                                    │
 ├──────────────────┼─────────────────────────────────────────────────────────┤
 │  Grafana OnCall  │  Acquired from Amixr (2021)                             │
 │  (incident mgmt) │  On-call schedules, escalation chains, incident routing │
 │                  │  Licence: AGPLv3                                        │
-│                  │  Covered in: Demo 20                                   │
+│                  │  Covered in: Demo 20                                    │
 └──────────────────┴─────────────────────────────────────────────────────────┘
 ```
 
@@ -539,9 +561,16 @@ What AGPLv3 means:
         your source code modifications under AGPLv3
     ⚠️  This is the "copyleft" provision — it prevents companies from
         building competing managed services without contributing back
-    ⚠️  This is why AWS, Google, and Azure don't offer Grafana, Loki,
-        or Tempo as managed services — they would need to open-source
-        their infrastructure modifications
+    ⚠️  AWS DOES offer managed Grafana (Amazon Managed Grafana) and Azure
+        offers Azure Managed Grafana. However, both cloud providers achieved
+        this by signing a proprietary commercial licensing agreement directly
+        with Grafana Labs — NOT by using the AGPLv3 open-source version and
+        publishing their infrastructure modifications as AGPLv3 requires.
+        The AGPLv3 requirement to publish modifications is what makes cloud
+        providers prefer a commercial deal over using the OSS version.
+        For Loki and Tempo: no major cloud provider offers these as managed
+        services — they are available only via Grafana Cloud (Grafana Labs own)
+        or self-hosted. The AGPLv3 copyleft provision is the deterrent.
 
   For this demo series:
     ✅ 100% internal use — no AGPLv3 obligations apply
@@ -559,25 +588,25 @@ What AGPLv3 means:
 ┌────────────────────────────────────────┬──────────────┬──────────────────┐
 │  Feature                               │  OSS (used)  │  Enterprise      │
 ├────────────────────────────────────────┼──────────────┼──────────────────┤
-│  Dashboards and panels                 │  ✅ Full     │  ✅ Full         │
-│  Prometheus data source                │  ✅ Full     │  ✅ Full         │
-│  Loki data source                      │  ✅ Full     │  ✅ Full         │
-│  Tempo data source                     │  ✅ Full     │  ✅ Full         │
-│  Alerting (unified alerting)           │  ✅ Full     │  ✅ Full         │
-│  Grafana OnCall integration            │  ✅ Full     │  ✅ Full         │
-│  Variables and templating              │  ✅ Full     │  ✅ Full         │
-│  Dashboard provisioning                │  ✅ Full     │  ✅ Full         │
-│  Plugin ecosystem (community)          │  ✅ Full     │  ✅ Full         │
-│  Basic RBAC (Viewer/Editor/Admin)      │  ✅ Full     │  ✅ Full         │
+│  Dashboards and panels                 │  ✅ Full     │  ✅ Full        │
+│  Prometheus data source                │  ✅ Full     │  ✅ Full        │
+│  Loki data source                      │  ✅ Full     │  ✅ Full        │
+│  Tempo data source                     │  ✅ Full     │  ✅ Full        │
+│  Alerting (unified alerting)           │  ✅ Full     │  ✅ Full        │
+│  Grafana OnCall integration            │  ✅ Full     │  ✅ Full        │
+│  Variables and templating              │  ✅ Full     │  ✅ Full        │
+│  Dashboard provisioning                │  ✅ Full     │  ✅ Full        │
+│  Plugin ecosystem (community)          │  ✅ Full     │  ✅ Full        │
+│  Basic RBAC (Viewer/Editor/Admin)      │  ✅ Full     │  ✅ Full        │
 ├────────────────────────────────────────┼──────────────┼──────────────────┤
-│  SAML / SSO integration                │  ❌ Basic    │  ✅ Full SAML    │
-│  LDAP team synchronisation             │  ❌ Basic    │  ✅ Full sync     │
-│  Data source permissions               │  ❌ None     │  ✅ Team-level    │
-│  Dashboard permissions (fine-grained)  │  ❌ Basic    │  ✅ Folder/dash   │
-│  Audit logging                         │  ❌ None     │  ✅ Full          │
-│  Scheduled PDF reporting               │  ❌ None     │  ✅ Full          │
-│  Datadog / Splunk / New Relic plugins  │  ❌ None     │  ✅ Premium       │
-│  Enterprise support SLA                │  ❌ Community │  ✅ SLA-backed   │
+│  SAML / SSO integration                │  ❌ Basic    │  ✅ Full SAML   │
+│  LDAP team synchronisation             │  ❌ Basic    │  ✅ Full sync   │
+│  Data source permissions               │  ❌ None     │  ✅ Team-level  │
+│  Dashboard permissions (fine-grained)  │  ❌ Basic    │  ✅ Folder/dash │
+│  Audit logging                         │  ❌ None     │  ✅ Full        │
+│  Scheduled PDF reporting               │  ❌ None     │  ✅ Full        │
+│  Datadog / Splunk / New Relic plugins  │  ❌ None     │  ✅ Premium     │
+│  Enterprise support SLA                │  ❌ Community │  ✅ SLA-backed │
 └────────────────────────────────────────┴──────────────┴──────────────────┘
 
 Conclusion for this demo series:
@@ -672,7 +701,7 @@ What kube-prometheus-stack gives you out of the box:
 ```
 
 The Prometheus binary inside kube-prometheus-stack is unchanged — it is the
-same binary from `prom/prometheus:v3.3.1`. You are not trading away Prometheus.
+same binary from `prom/prometheus:v3.4.1`. You are not trading away Prometheus.
 You are adding the scaffolding that makes it operationally manageable in a
 dynamic Kubernetes environment.
 
@@ -693,6 +722,226 @@ as the monitoring foundation of every OpenShift cluster globally. This is the
 same codebase — which means thousands of enterprise OpenShift deployments are
 running production-grade Prometheus Operator, with Red Hat's security team
 actively reviewing and patching it.
+
+---
+
+## 3.5 CLI Tools — Reference for This Demo Series
+
+These are the command-line tools used throughout all 25 demos.
+Learn them here — they are referenced without re-introduction in later demos.
+
+### promtool — Official Prometheus CLI
+
+`promtool` is the official Prometheus CLI, shipped inside the Prometheus
+binary container. It validates configs, checks rules, queries the API,
+and analyses TSDB data. Use it in CI/CD pipelines to catch errors before deployment.
+
+**Access promtool (two methods):**
+
+```bash
+# Method 1: Run inside the Prometheus pod (no local install needed)
+PROM_POD=$(kubectl get pods -n monitoring   -l app.kubernetes.io/name=prometheus   -o jsonpath='{.items[0].metadata.name}')
+
+kubectl exec -n monitoring $PROM_POD -c prometheus -- promtool --help
+
+# Method 2: Copy binary to local machine for CI/CD use
+kubectl cp monitoring/$PROM_POD:/bin/promtool /usr/local/bin/promtool
+chmod +x /usr/local/bin/promtool
+promtool --version
+```
+
+**Key promtool commands used in this series:**
+
+```bash
+# ── Config validation ─────────────────────────────────────────────────────────
+# Validate the running Prometheus configuration (catches syntax errors)
+kubectl exec -n monitoring $PROM_POD -c prometheus --   promtool check config /etc/prometheus/config_out/prometheus.env.yaml
+
+# Validate a rules file locally before applying (use in CI/CD)
+promtool check rules src/recording-rules/test-app-rules.yaml
+
+# ── Query (ad-hoc PromQL from CLI, no browser needed) ────────────────────────
+# Instant query — current value
+kubectl exec -n monitoring $PROM_POD -c prometheus --   promtool query instant http://localhost:9090 'up'
+
+# Range query — values over a time range
+kubectl exec -n monitoring $PROM_POD -c prometheus --   promtool query range   --start=$(date -d '1 hour ago' +%s)   --end=$(date +%s)   --step=60   http://localhost:9090 'rate(http_requests_total[5m])'
+
+# ── TSDB analysis ─────────────────────────────────────────────────────────────
+# Full TSDB analysis — cardinality, block sizes, compression ratios
+kubectl exec -n monitoring $PROM_POD -c prometheus --   promtool tsdb analyze /prometheus
+
+# List TSDB blocks
+kubectl exec -n monitoring $PROM_POD -c prometheus --   promtool tsdb list /prometheus
+
+# ── Unit testing alert rules (Demo 07) ───────────────────────────────────────
+# Run unit tests against rule files
+promtool test rules tests/alert-rules-test.yaml
+
+# ── Debugging ────────────────────────────────────────────────────────────────
+# Show all metric names available
+kubectl exec -n monitoring $PROM_POD -c prometheus --   promtool query labels http://localhost:9090 __name__
+```
+
+### amtool — Official Alertmanager CLI
+
+`amtool` is the official Alertmanager CLI for managing silences, checking
+routing, and inspecting active alerts. Shipped inside the Alertmanager container.
+
+**Access amtool:**
+
+```bash
+AM_POD=$(kubectl get pods -n monitoring   -l app.kubernetes.io/name=alertmanager   -o jsonpath='{.items[0].metadata.name}')
+
+# Run inside the Alertmanager pod
+kubectl exec -n monitoring $AM_POD -c alertmanager --   amtool --alertmanager.url=http://localhost:9093 --help
+```
+
+**Key amtool commands used in this series:**
+
+```bash
+AM="kubectl exec -n monitoring $AM_POD -c alertmanager --   amtool --alertmanager.url=http://localhost:9093"
+
+# ── Alerts ───────────────────────────────────────────────────────────────────
+# List all currently firing alerts
+$AM alert query
+
+# Filter alerts by label
+$AM alert query alertname=HighCPU
+
+# ── Silences ─────────────────────────────────────────────────────────────────
+# Create a silence (suppress all alerts matching labels for 2 hours)
+$AM silence add   alertname=NodeHighCPU   --duration=2h   --author="sre-team"   --comment="Planned maintenance window"
+
+# List all active silences
+$AM silence query
+
+# Expire (delete) a silence by ID
+$AM silence expire <silence-id>
+
+# ── Config and routing ────────────────────────────────────────────────────────
+# Show the current Alertmanager config
+$AM config show
+
+# Show the routing tree
+$AM config routes show
+
+# Test which route an alert would follow (very useful for debugging)
+$AM config routes test   --verify-receivers=slack-critical   alertname=HighErrorRate namespace=orders severity=critical
+```
+
+### kubectl — Kubernetes CLI (Core Tool)
+
+Used in every demo. Key patterns specific to this monitoring stack:
+
+```bash
+# ── Pod access ───────────────────────────────────────────────────────────────
+# Port-forward to Prometheus UI
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+
+# Port-forward to Grafana UI
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+
+# Port-forward to Alertmanager UI
+kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+# Prometheus logs
+kubectl logs -n monitoring   -l app.kubernetes.io/name=prometheus -c prometheus --tail=50
+
+# Prometheus Operator logs (diagnose ServiceMonitor discovery issues)
+kubectl logs -n monitoring   -l app.kubernetes.io/name=prometheus-operator --tail=50
+
+# Grafana logs (diagnose dashboard provisioning errors)
+kubectl logs -n monitoring   -l app.kubernetes.io/name=grafana -c grafana --tail=50
+
+# Alertmanager logs
+kubectl logs -n monitoring   -l app.kubernetes.io/name=alertmanager -c alertmanager --tail=50
+
+# ── Resource inspection ───────────────────────────────────────────────────────
+# List all ServiceMonitors across all namespaces
+kubectl get servicemonitors -A
+
+# Describe a ServiceMonitor to check selector and endpoints
+kubectl describe servicemonitor test-app -n default
+
+# List all PrometheusRules
+kubectl get prometheusrules -A
+
+# Check Prometheus pod resource usage
+kubectl top pod -n monitoring
+```
+
+### curl — HTTP API Access
+
+Used to interact with Prometheus, Alertmanager, and Pushgateway APIs directly.
+Requires an active port-forward.
+
+```bash
+# ── Prometheus API ────────────────────────────────────────────────────────────
+# Instant query
+curl -s 'http://localhost:9090/api/v1/query?query=up' | python3 -m json.tool
+
+# Range query (last 1 hour, 60s step)
+curl -s "http://localhost:9090/api/v1/query_range?query=rate(http_requests_total[5m])&start=$(date -d '1 hour ago' +%s)&end=$(date +%s)&step=60" | python3 -m json.tool
+
+# List all metric names
+curl -s http://localhost:9090/api/v1/label/__name__/values | python3 -m json.tool
+
+# Check all targets and their health
+curl -s http://localhost:9090/api/v1/targets | python3 -m json.tool
+
+# Reload Prometheus config (after manual config change)
+curl -s -X POST http://localhost:9090/-/reload
+
+# ── Alertmanager API ──────────────────────────────────────────────────────────
+# List active alerts
+curl -s http://localhost:9093/api/v2/alerts | python3 -m json.tool
+
+# ── Pushgateway API (Demo 03) ─────────────────────────────────────────────────
+# Push a metric
+echo 'my_metric 42' | curl -s --data-binary @-   http://localhost:9091/metrics/job/my-job
+
+# View stored metric groups
+curl -s http://localhost:9091/api/v1/metrics | python3 -m json.tool
+
+# Delete a metric group
+curl -s -X DELETE http://localhost:9091/metrics/job/my-job
+```
+
+### helm — Helm Package Manager
+
+Used to install, upgrade, and manage the kube-prometheus-stack.
+
+```bash
+# ── Essential commands for this series ───────────────────────────────────────
+# Check which version is installed
+helm list -n monitoring
+
+# See all available chart versions
+helm search repo prometheus-community/kube-prometheus-stack --versions | head -5
+
+# Show all chart defaults (before overriding with values.yaml)
+helm show values prometheus-community/kube-prometheus-stack --version 84.5.0 | head -50
+
+# Show chart metadata and bundled component versions
+helm show chart prometheus-community/kube-prometheus-stack --version 84.5.0
+
+# Install (Demo 01)
+helm install kube-prometheus-stack   prometheus-community/kube-prometheus-stack   --version 84.5.0   --namespace monitoring   --values src/values.yaml   --wait --timeout 10m
+
+# Upgrade after values.yaml change
+helm upgrade kube-prometheus-stack   prometheus-community/kube-prometheus-stack   --version 84.5.0   --namespace monitoring   --values src/values.yaml
+
+# View upgrade history
+helm history kube-prometheus-stack -n monitoring
+
+# Rollback to previous version
+helm rollback kube-prometheus-stack 1 -n monitoring
+
+# Uninstall (cleanup)
+helm uninstall kube-prometheus-stack -n monitoring
+```
 
 ---
 
@@ -857,7 +1106,7 @@ current in the stack.
    All access via kubectl port-forward or internal Grafana only
 
 2. Always pin explicit image and chart versions
-   helm install ... --version 68.4.4 (never omit --version)
+   helm install ... --version 84.5.0 (never omit --version)
    Prevents surprise breaking changes and supply chain substitution
 
 3. Always use an explicit values.yaml
@@ -869,8 +1118,8 @@ current in the stack.
    github.com/prometheus-operator/prometheus-operator/releases
 
 5. Scan images before production use
-   trivy image prom/prometheus:v3.3.1
-   trivy image grafana/grafana:11.6.0
+   trivy image prom/prometheus:v3.4.1
+   trivy image grafana/grafana:12.3.0
 
 6. Run Grafana with authentication always enabled
    In production: OIDC/SSO, not local passwords
@@ -956,6 +1205,23 @@ StatefulSet: alertmanager-kube-prometheus-stack-alertmanager-0
     Container 2: config-reloader   — watches for config changes, triggers reload
   StatefulSet because it stores silence state on a PVC
 
+  Why does Alertmanager need storage?
+  Alertmanager stores two categories of state on its PVC:
+    1. Silences: when an on-call engineer silences an alert (e.g. "suppress
+       NodeHighCPU for the next 2 hours during maintenance"), that silence
+       must survive a pod restart. Without PVC: restart = all silences lost
+       = all suppressed alerts immediately re-notify the on-call team.
+    2. Notification deduplication state: Alertmanager tracks which alert groups
+       have already been notified to prevent duplicate Slack/PagerDuty messages.
+       Without PVC: restart = dedup state lost = every active alert re-notifies.
+
+  Why StatefulSet and not Deployment?
+  In HA mode (replicas: 3), Alertmanager pods form a gossip mesh using the
+  alertmanager-operated headless service. Each pod must have a stable, unique
+  DNS name (alertmanager-0, alertmanager-1, alertmanager-2) so peers can find
+  each other reliably after restarts. StatefulSet provides this stable identity.
+  A Deployment would assign random pod names — gossip peer discovery would break.
+
 Deployment: kube-prometheus-stack-grafana
   Purpose:    Dashboard visualisation and unified alerting UI
   Storage:    1Gi PVC (Grafana SQLite database)
@@ -964,6 +1230,19 @@ Deployment: kube-prometheus-stack-grafana
     Container 2: grafana-sc-datasources — sidecar: loads data sources from ConfigMaps
     Container 3: grafana-sc-dashboard   — sidecar: loads dashboards from ConfigMaps
   The sidecars enable provisioning — dashboards load automatically, no manual setup
+
+  Why Deployment and not StatefulSet?
+  Grafana uses a Deployment (not a StatefulSet) despite having a PVC. This is
+  intentional and correct for a single-replica workload:
+    StatefulSets are needed when: pods require stable network identity for
+      peer-to-peer communication (e.g. Alertmanager gossip, database replication),
+      OR when multiple replicas each need their own separate PVC.
+    Grafana has one replica and does not communicate with peer Grafana pods.
+    A Deployment can mount a PVC just fine — the restriction is that Deployments
+      cannot use volumeClaimTemplates (which auto-create one PVC per replica).
+    For Grafana HA (multiple replicas): you switch to an external database
+      (PostgreSQL or MySQL) and the SQLite PVC is removed — Deployment remains
+      the correct controller because replicas are stateless once the DB is external.
 
 Deployment: kube-prometheus-stack-operator
   Purpose:    Watches CRDs, generates Prometheus config, triggers reloads
@@ -1172,6 +1451,65 @@ This is the provisioning pattern — dashboards are declared in Git (ConfigMaps)
 not manually imported. Adding a new dashboard = creating a new ConfigMap.
 ```
 
+**Scan interval — how often the sidecar checks for changes:**
+
+```
+Default scan interval: 5 seconds
+  The grafana-sc-dashboard sidecar polls the Kubernetes API every 5 seconds
+  for ConfigMap changes with label grafana_dashboard=1.
+
+  Watch method: WATCH (long-poll) by default — Kubernetes pushes events
+  to the sidecar immediately when a ConfigMap changes.
+  The 5-second interval is the fallback polling rate for missed events.
+
+Configuration in values.yaml:
+  grafana:
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard       ← which label to watch for
+        labelValue: "1"                ← value of that label
+        folder: /tmp/dashboards        ← where to copy JSON files
+        watchMethod: WATCH             ← WATCH (event-driven) or LIST (polling)
+        searchNamespace: ALL           ← watch ALL namespaces (or list specific)
+        provider:
+          name: sidecarProvider
+          allowUiUpdates: false        ← prevent UI edits overwriting GitOps source
+
+For datasources sidecar (grafana-sc-datasources):
+  grafana:
+    sidecar:
+      datasources:
+        enabled: true
+        label: grafana_datasource
+        labelValue: "1"
+```
+
+**What happens when dashboard JSON has a syntax error:**
+
+```
+Step 1: You apply a ConfigMap with invalid Grafana dashboard JSON
+        kubectl apply -f broken-dashboard-configmap.yaml
+
+Step 2: The sidecar copies the file to /tmp/dashboards/ regardless
+        (it does not validate JSON — it just copies)
+
+Step 3: Grafana's provisioner tries to load the file
+        → Error appears in Grafana server logs, NOT in the sidecar logs
+
+Where to check for dashboard load errors:
+  kubectl logs -n monitoring     -l app.kubernetes.io/name=grafana     -c grafana     --tail=50 | grep -i "dashboard\|error\|provision"
+
+  Common error messages:
+    "failed to load dashboard from"      → file exists but JSON is invalid
+    "could not load dashboard file"      → file missing or permissions issue
+    "Dashboard not provisioned"          → dashboard loaded but has query errors
+
+Validate JSON locally before applying:
+  cat my-dashboard.json | python3 -m json.tool > /dev/null && echo "valid"
+  OR use: jq . my-dashboard.json > /dev/null
+```
+
 ### About Secrets
 
 There are **12 Secrets** installed. They fall into four groups:
@@ -1312,42 +1650,331 @@ Query engine
   Used by Grafana, the Prometheus UI, and alert rule evaluation
 ```
 
+### TSDB Storage — Key Terms and Data Locations
+
+Understanding where data lives at each stage helps you reason about
+disk usage, query performance, crash recovery, and what survives a restart.
+
+```
+Term              What it is
+────────────────────────────────────────────────────────────────────────────
+WAL               Write-Ahead Log — a sequential append-only log on disk.
+(Write-Ahead Log) Every incoming sample is written here first before anything
+                  else. Provides crash safety: if Prometheus dies mid-scrape,
+                  the WAL is replayed on restart to recover all samples that
+                  were not yet flushed to a block.
+                  Location: /prometheus/wal/
+                  Files:    00000001, 00000002 ... (segments, each up to 128MB)
+                  Survives: pod restart ✅ (on PVC)  |  pod deletion ❌ (no PVC)
+
+Head Block        The in-memory, writable, current block. All samples after
+                  WAL write go into the head block for fast querying.
+                  Covers approximately the last 2 hours of data.
+                  Compressed in memory using Gorilla XOR compression.
+                  Also memory-mapped to disk (chunks_head/) for crash recovery.
+                  Location: RAM + /prometheus/chunks_head/ (mmap)
+                  Survives: pod restart ✅ (replayed from WAL + chunks_head)
+
+On-disk blocks    Immutable, read-only blocks created when the head block
+                  is flushed every 2 hours. Each block contains:
+                    chunks/  → compressed raw samples (float64 + timestamp)
+                    index    → inverted index: label → series → chunk offset
+                    meta.json → block metadata: min/max time, stats, ULID
+                    tombstones → soft-delete markers for deleted series
+                  Location: /prometheus/<ULID>/ (e.g. 01HPB5X2YJ.../)
+                  Survives: pod restart ✅ | pod deletion ❌ (without PVC)
+
+Compactor         Background goroutine that merges small blocks into larger
+                  ones to reduce file count and improve query performance.
+                  Merge schedule: 2h → 6h → 24h → 48h → up to retention limit
+                  Also handles: tombstone cleanup, retention enforcement,
+                  deletion of blocks older than --storage.tsdb.retention.time
+```
+
+**Data Flow 1: On Startup or Restart**
+
+```
+Prometheus pod starts
+        │
+        ▼
+  Load config from /etc/prometheus/config_out/prometheus.env.yaml
+        │
+        ▼
+  Open WAL at /prometheus/wal/
+        │
+        ├── WAL segments present? (crash recovery path)
+        │       │
+        │       ▼
+        │   Replay WAL segments sequentially
+        │   Re-insert all samples into new head block in memory
+        │   Verify checksums — corrupted segments skipped with warning
+        │       │
+        │       ▼
+        │   Head block rebuilt from WAL  ✅
+        │
+        ├── chunks_head/ present? (normal restart path)
+        │       │
+        │       ▼
+        │   Memory-map chunks_head/ files into head block
+        │   Much faster than full WAL replay for recent data
+        │
+        ▼
+  Load existing on-disk blocks from /prometheus/<ULID>/
+  (these are immutable — no replay needed, just open and map)
+        │
+        ▼
+  Prometheus ready — all historical data available for queries
+  New scrapes resume, new samples go to WAL then head block
+```
+
+**Data Flow 2: Live Scraping (Every 15 Seconds)**
+
+```
+Scraper fires HTTP GET /metrics → target responds with OpenMetrics text
+        │
+        ▼
+  Parse response → list of (metric_name, labels, value, timestamp) tuples
+        │
+        ▼
+  Step 1: Write to WAL  ──────────────────────────────────────────────────
+  Each sample appended to current WAL segment (sequential write, very fast)
+  WAL segment rotates when it reaches 128MB
+  fsync after each write — guarantees durability even on power loss
+        │
+        ▼
+  Step 2: Write to Head Block  ────────────────────────────────────────────
+  Sample inserted into the in-memory head block
+  Gorilla XOR compression applied (delta-of-delta timestamps, XOR values)
+  Head block index updated — new series get a new entry
+        │
+        ▼
+  Step 3: Head block full? (≈2 hours of data)  ────────────────────────────
+  If NO: continue — next scrape goes back to Step 1
+  If YES:
+        │
+        ▼
+  Step 4: Flush head block to new on-disk block  ──────────────────────────
+  New 2-hour immutable block written to /prometheus/<new-ULID>/
+  WAL truncated — segments covered by the new block deleted
+  chunks_head/ updated — old mmap files removed
+        │
+        ▼
+  Step 5: Compactor runs (background)  ────────────────────────────────────
+  Periodically merges adjacent 2h blocks → 6h → 24h → 48h
+  Older merged blocks deleted — only the merged result kept
+  Retention enforcer deletes blocks older than retention.time (10d)
+        │
+        ▼
+  Query engine can now read from both:
+    Head block (in memory) → recent data, fastest queries
+    On-disk blocks         → older data, read from disk/page cache
+
+Storage locations summary:
+  /prometheus/wal/            WAL segments (crash safety buffer)
+  /prometheus/chunks_head/    Head block mmap files (fast restart recovery)
+  /prometheus/<ULID>/         Immutable on-disk blocks (all historical data)
+  All under: PVC mountPath /prometheus (storageSpec in values.yaml)
+```
+
 ### Prometheus Operator
 
 The Operator is a Kubernetes controller following the operator pattern.
 It uses client-go informers to watch CRD objects cluster-wide and reconcile
-the Prometheus configuration to match the desired state.
+the Prometheus and Alertmanager configuration to match the desired state.
+The core idea: you declare *what you want* in CRD YAML; the Operator
+figures out *how to make it happen* in Prometheus/Alertmanager config.
+
+**How the Operator works — reconcile loop:**
 
 ```
-Operator watch loop:
-  1. Watches: ServiceMonitor, PodMonitor, Probe, ScrapeConfig,
-              PrometheusRule, AlertmanagerConfig, Prometheus, Alertmanager
-              (all via Kubernetes watch API — long-lived HTTP stream)
+The Operator runs a continuous reconcile loop watching 10 CRD types:
+  ServiceMonitor, PodMonitor, Probe, ScrapeConfig,
+  PrometheusRule, AlertmanagerConfig,
+  Prometheus, Alertmanager, PrometheusAgent, ThanosRuler
 
-  2. On ServiceMonitor created/updated/deleted:
-     a. Query Kubernetes Endpoints API for services matching spec.selector
-     b. Generate scrape_config blocks for each matched endpoint
-     c. Write the full prometheus.yaml to a Kubernetes Secret
-     d. The config-reloader sidecar detects Secret change via inotify
-     e. config-reloader POSTs to Prometheus /-/reload
-     f. Prometheus reloads config (no restart) within 30 seconds
+For each CRD type, here is what the Operator does and what manual work it replaces:
+```
 
-  3. On PrometheusRule created/updated/deleted:
-     a. Validate the rule PromQL via the admission webhook
-     b. Write rule files to a Kubernetes ConfigMap
-     c. config-reloader detects ConfigMap change
-     d. Prometheus reloads rules (no restart)
+**ServiceMonitor → Operator generates prometheus.yaml scrape_configs**
 
-  4. On Prometheus CRD created (initial install):
-     a. Create the StatefulSet for the Prometheus pod
-     b. Create the ServiceAccount with required RBAC
-     c. Create the Service for port 9090
-     d. Create the PVC for TSDB storage (if storageSpec is set)
+```
+What it does:
+  1. Watch Kubernetes API for ServiceMonitor objects (all namespaces)
+  2. For each ServiceMonitor: query Endpoints API to get real pod IPs
+  3. Generate a kubernetes_sd_configs scrape job in prometheus.yaml
+  4. Include all relabeling rules to add pod/service/namespace labels
+  5. Write generated config to the prometheus Secret
+  6. config-reloader sidecar detects Secret change → POST /-/reload
+  7. Prometheus reloads in < 30 seconds without restart
 
-  Reconciliation is idempotent:
-     The Operator continuously reconciles actual state to desired state.
-     If the Secret is manually deleted, the Operator recreates it.
-     If the StatefulSet is scaled down, the Operator scales it back up.
+Manual task it replaces:
+  Editing prometheus.yaml scrape_configs by hand for every new service
+  Re-applying ConfigMap and manually calling /-/reload
+  Keeping pod IPs updated as pods restart and get new IPs
+
+Use case: Developer deploys "inventory-service" and adds a ServiceMonitor.
+  Within 30 seconds, Prometheus is scraping it — no platform team involvement.
+  Self-service monitoring for development teams.
+```
+
+**PodMonitor → scrapes pods directly without a Kubernetes Service**
+
+```
+What it does:
+  Same flow as ServiceMonitor but targets pod IPs directly
+  Does not require a Service object to exist for the target pods
+  Uses pod labels in spec.selector.matchLabels to find pods
+
+When to use PodMonitor instead of ServiceMonitor:
+  - Pod has no Service (batch Jobs, bare pods, some DaemonSets)
+  - You need per-pod scraping with different intervals per pod
+  - The pod has multiple containers with separate /metrics endpoints
+    and you need to scrape each container port independently
+
+Manual task it replaces:
+  Static scrape configs with pod IP addresses that go stale on restart
+```
+
+**Probe → configures Blackbox Exporter synthetic checks**
+
+```
+What it does:
+  1. Watch Probe objects (define HTTP/TCP/ICMP targets to probe)
+  2. Generate scrape_config pointing at the Blackbox Exporter
+  3. Configure the target URLs and probe modules (http_2xx, tcp, icmp)
+  4. Prometheus scrapes Blackbox Exporter which performs the actual probe
+
+When to use:
+  - Synthetic monitoring: "is https://api.example.com/health returning 200?"
+  - SSL certificate expiry checks
+  - TCP port availability checks
+  - Used in Demo 19 (Synthetic Monitoring)
+
+Manual task it replaces:
+  Writing Blackbox Exporter scrape_configs with target lists by hand
+```
+
+**ScrapeConfig → low-level scrape config for non-Kubernetes targets**
+
+```
+What it does:
+  Exposes the full Prometheus scrape_config API as a CRD
+  Supports: staticConfigs, httpSDConfigs, fileSDConfigs, consulSDConfigs
+  Used when targets are not Kubernetes workloads at all
+
+Use cases:
+  - Scrape an on-premises Redis server at 10.1.2.3:9121
+  - Scrape an external load balancer
+  - Scrape targets discovered via Consul service catalog
+  - Any target that does not have a Kubernetes Service or Pod
+
+Manual task it replaces:
+  Adding static_configs or sd_configs blocks directly to prometheus.yaml
+```
+
+**PrometheusRule → alert and recording rules as CRDs with validation**
+
+```
+What it does:
+  1. Watch PrometheusRule objects
+  2. Extract spec.groups (the rule definitions)
+  3. Write each rule group to a file in a ConfigMap:
+     prometheus-kube-prometheus-stack-prometheus-rulefiles-0
+  4. config-reloader detects ConfigMap change → POST /-/reload
+  5. Prometheus loads the new rules within 30 seconds
+
+The admission webhook validates PromQL BEFORE the CRD is accepted:
+  kubectl apply -f bad-rule.yaml
+  → Webhook intercepts the API call
+  → Validates every expr field as valid PromQL
+  → If invalid: kubectl apply fails immediately with error message
+  → The bad rule never reaches Prometheus
+
+Manual task it replaces:
+  Editing rule files inside Prometheus ConfigMaps
+  No validation — bad PromQL silently disables an entire rule group
+```
+
+**AlertmanagerConfig → per-namespace alert routing**
+
+```
+What it does:
+  1. Watch AlertmanagerConfig objects in all namespaces
+  2. Merge them into the global Alertmanager routing config
+  3. Write the merged config to the alertmanager Secret
+  4. config-reloader triggers Alertmanager config reload
+
+Use case: The payments team in namespace "payments" wants their alerts
+  routed to their own Slack channel, not the platform team's channel.
+  They create an AlertmanagerConfig in their namespace — no access to
+  the global Alertmanager config required.
+
+Manual task it replaces:
+  Editing the global Alertmanager routing config for every team's needs
+  Central bottleneck where platform team manages all receiver config
+```
+
+**Prometheus / Alertmanager CRDs → lifecycle management**
+
+```
+Prometheus CRD:
+  The Operator reads this CRD and creates/manages:
+    StatefulSet (the Prometheus pod)
+    Service (port 9090 for queries and /-/reload)
+    ServiceAccount + ClusterRoleBinding (RBAC for service discovery)
+    PVC (via storageSpec — TSDB persistent storage)
+    Secret (generated prometheus.yaml scrape config)
+
+  Change spec.retention from 10d to 30d → Operator updates the StatefulSet
+  args, pod restarts with new retention flag. No manual StatefulSet editing.
+
+Alertmanager CRD:
+  Same pattern for Alertmanager StatefulSet, Service, ServiceAccount, PVC.
+  Change replicas from 1 to 3 → Operator scales the StatefulSet,
+  configures gossip mesh, updates alertmanager-operated headless service.
+```
+
+**The Admission Webhook — how it works:**
+
+```
+An admission webhook is an HTTP server that Kubernetes calls during the
+API request lifecycle — BEFORE the object is stored in etcd.
+
+Without webhook:
+  kubectl apply -f rule-with-bad-promql.yaml
+  → Kubernetes stores the PrometheusRule in etcd ✅
+  → Operator reads it, writes rule file to ConfigMap
+  → Prometheus loads rules, encounters invalid PromQL
+  → Prometheus silently skips the entire rule group ❌
+  → Your critical alert is now disabled with no error message
+
+With webhook (Prometheus Operator admission webhook):
+  kubectl apply -f rule-with-bad-promql.yaml
+  → Kubernetes API calls the webhook: POST /validate-monitoring-coreos-com-v1-prometheusrule
+  → Webhook parses the CRD, extracts each expr field
+  → Runs promtool check rules validation on each expression
+  → Invalid PromQL found → webhook returns 400 Forbidden
+  → kubectl apply FAILS with clear error message ✅
+  → Bad rule never reaches Prometheus ✅
+
+The webhook TLS certificate:
+  Stored in Secret: kube-prometheus-stack-admission
+  Contains: tls.crt, tls.key, ca.crt
+  The Operator manages certificate rotation automatically
+  The Kubernetes API server uses ca.crt to trust the webhook server
+
+What the webhook validates:
+  ✅ Valid PromQL syntax in expr fields
+  ✅ Valid alert/record metric names (no spaces, valid characters)
+  ✅ Valid YAML structure for rule groups
+  ❌ Does NOT validate: that the metric actually exists in Prometheus
+  ❌ Does NOT validate: that the query returns useful results
+  ❌ Does NOT validate: alert threshold values are reasonable
+
+Reconciliation is idempotent:
+  The Operator continuously reconciles actual state to desired state.
+  If the Secret is manually deleted, the Operator recreates it.
+  If the StatefulSet is scaled down, the Operator scales it back up.
 ```
 
 ### Alertmanager
@@ -1410,7 +2037,8 @@ Container: grafana
   Config:   /etc/grafana/grafana.ini (from ConfigMap)
   Database: SQLite at /var/lib/grafana/grafana.db (on PVC)
             Stores: dashboards, users, alert rules, API keys, teams
-  Data sources: connected to Prometheus at http://prometheus-operated:9090
+  Data sources: connected to Prometheus at http://kube-prometheus-stack-prometheus:9090
+              ⚠️  Uses the named ClusterIP service — NOT the headless prometheus-operated
 
 Container: grafana-sc-datasources (sidecar)
   Watches ConfigMaps with label: grafana_datasource=1
@@ -2280,6 +2908,96 @@ curl -u admin:observability-demo http://localhost:3000/api/dashboards/home
 curl -u admin:observability-demo http://localhost:3000/api/health
 ```
 
+### When to Use an Ingress Controller Instead of Port-Forward
+
+**Port-forward** (`kubectl port-forward`) is what we use throughout this demo
+series. It is correct for learning, debugging, and local access. It is not
+suitable for team-wide access or production.
+
+**Ingress controller** is the Kubernetes-native way to expose HTTP services
+externally with a stable URL, TLS termination, and authentication.
+
+```
+Use port-forward when:
+  ✅ Local development and learning (this demo series)
+  ✅ One-time debugging during an incident
+  ✅ Running on a local Minikube with no external access needed
+  ✅ The connection is for you only, right now
+
+Use Ingress controller when:
+  ✅ Multiple team members need access to Grafana on a shared cluster
+  ✅ You want a stable URL (grafana.company.internal) not a localhost port
+  ✅ You need TLS (HTTPS) — port-forward is HTTP only by default
+  ✅ You want to enforce authentication at the network layer (OAuth2 proxy)
+  ✅ Production or staging environment
+```
+
+**How an Ingress controller works:**
+
+```
+Without Ingress (port-forward only):
+  You → kubectl port-forward → localhost:3000 → Grafana pod
+  Only you can access it. Stops when your terminal closes.
+
+With Ingress controller (e.g. ingress-nginx):
+  Internet/VPN → Load Balancer → ingress-nginx pod
+                                       │
+                                       ├── /grafana → kube-prometheus-stack-grafana:80
+                                       ├── /prometheus → kube-prometheus-stack-prometheus:9090
+                                       └── /alertmanager → kube-prometheus-stack-alertmanager:9093
+
+  All team members access: https://grafana.company.internal
+  TLS terminated at the Ingress controller
+  Always available — does not depend on anyone's terminal session
+```
+
+**Grafana Ingress example (for when you move beyond Minikube):**
+
+```yaml
+# Enable Ingress in values.yaml for kube-prometheus-stack
+grafana:
+  ingress:
+    enabled: true
+    ingressClassName: nginx          # name of your Ingress controller class
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      # For OAuth2 authentication (recommended for production):
+      # nginx.ingress.kubernetes.io/auth-url: "https://oauth2-proxy.monitoring.svc/oauth2/auth"
+      # nginx.ingress.kubernetes.io/auth-signin: "https://grafana.company.internal/oauth2/start"
+    hosts:
+      - grafana.company.internal     # your DNS name
+    tls:
+      - secretName: grafana-tls      # TLS certificate Secret
+        hosts:
+          - grafana.company.internal
+```
+
+**Ingress for Minikube (enabling the addon):**
+
+```bash
+# Enable the NGINX Ingress addon in Minikube
+minikube addons enable ingress
+
+# Verify it is running
+kubectl get pods -n ingress-nginx
+
+# Get the Minikube IP for your /etc/hosts entry
+minikube ip    # e.g. 192.168.49.2
+
+# Add to /etc/hosts (macOS/Linux):
+echo "$(minikube ip) grafana.local" | sudo tee -a /etc/hosts
+
+# Now access Grafana at http://grafana.local (with Ingress configured)
+```
+
+**Security warning:** Never expose Prometheus (port 9090) or
+Alertmanager (port 9093) directly via Ingress without authentication.
+These APIs have no built-in auth. Always route queries through
+Grafana (which has auth built in) or place an OAuth2 proxy in front.
+For Grafana itself, always enable SSO/OIDC in production.
+
+---
+
 ### Node Exporter Metrics Endpoint
 
 ```bash
@@ -2415,6 +3133,95 @@ Problem 4: Long-term storage
   Historical queries get slow as data ages.
 ```
 
+### Alertmanager HA — Gossip Mesh
+
+Alertmanager HA runs multiple replicas that form a gossip mesh to synchronise
+state (silences and notification dedup) across all replicas. This means if one
+Alertmanager pod dies, the others continue routing alerts with no data loss.
+
+```
+How the gossip mesh works (replicas: 3):
+
+  Prometheus sends fired alerts to ALL three Alertmanager replicas simultaneously:
+    POST http://alertmanager-0.alertmanager-operated:9093/api/v2/alerts
+    POST http://alertmanager-1.alertmanager-operated:9093/api/v2/alerts
+    POST http://alertmanager-2.alertmanager-operated:9093/api/v2/alerts
+
+  Each replica receives the same alert independently.
+  Without gossip: all three would send three Slack notifications.
+
+  With gossip mesh (memberlist protocol on port 9094):
+    Replicas gossip constantly about: which alerts have been notified,
+    which silences are active, which notifications are in-flight.
+    When replica-0 decides to send a notification → gossips to replica-1 and replica-2
+    They mark that alert group as "already notified" → suppress their own send
+    Result: exactly one Slack notification sent ✅
+
+  Silence synchronisation:
+    Engineer creates a silence on replica-0 via the UI
+    replica-0 gossips the new silence to replica-1 and replica-2
+    All replicas now suppress that alert — within a few seconds
+    Engineer can create silences via any replica — they all sync
+
+  Why StatefulSet with stable pod names:
+    The gossip mesh uses DNS to find peers:
+      alertmanager-0.alertmanager-operated.monitoring.svc.cluster.local
+      alertmanager-1.alertmanager-operated.monitoring.svc.cluster.local
+      alertmanager-2.alertmanager-operated.monitoring.svc.cluster.local
+    These names only work with StatefulSet (stable, predictable pod names)
+    A Deployment would have random pod names — peer discovery would fail
+```
+
+**Enable HA Alertmanager in values.yaml:**
+
+```yaml
+alertmanager:
+  alertmanagerSpec:
+    replicas: 3           # 3-node gossip cluster (odd number recommended)
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 1Gi
+```
+
+### Prometheus Federation — Scraping One Prometheus from Another
+
+Prometheus federation is a pull-based mechanism where one "global" Prometheus
+scrapes a subset of metrics from multiple "leaf" Prometheus instances.
+
+```
+When to use federation:
+  - Aggregate metrics from multiple clusters into one "global" view
+  - Pull a small set of high-level metrics from many Prometheus instances
+    without remote_write (no Mimir/Thanos needed)
+  - Legacy multi-cluster pattern before Thanos/Mimir were mature
+
+How it works:
+  Leaf Prometheus A (cluster-eu)   ─── /federate?match[]=...──► Global Prometheus
+  Leaf Prometheus B (cluster-us)   ─── /federate?match[]=...──► Global Prometheus
+  Leaf Prometheus C (cluster-ap)   ─── /federate?match[]=...──► Global Prometheus
+
+  Global Prometheus scrapes /federate endpoint of each leaf
+  /federate returns a filtered subset of metrics (not all metrics — too expensive)
+  Global Prometheus stores the federated metrics in its own TSDB
+
+Limitations of federation:
+  ❌ Only suitable for small metric subsets — full federation is too expensive
+  ❌ Adds scrape latency — global Prometheus queries are always behind leaf
+  ❌ No deduplication — if two leaf Prometheus have the same metric, both are stored
+  ❌ Does not solve long-term storage — still limited by local TSDB retention
+
+Federation endpoint:
+  http://prometheus:9090/federate?match[]={job="node-exporter"}&match[]={job="kube-state-metrics"}
+
+Modern alternative:
+  For true multi-cluster aggregation: use Mimir with remote_write (Demo 22)
+  or Thanos with sidecar. Federation is mostly a legacy pattern today.
+```
+
 ### Solutions Applied in Production
 
 ```
@@ -2452,6 +3259,56 @@ alertmanager:
     # Alertmanager cluster deduplicates across the mesh
 ```
 
+**Mimir deduplication — how duplicate data from two Prometheus HA instances is handled:**
+
+```
+Problem:
+  Two Prometheus instances (replica-0 and replica-1) both scrape the same targets.
+  Both scrape at t=0s. Due to jitter, replica-0 records timestamp 1000000015.231
+  and replica-1 records timestamp 1000000015.408 — slightly different timestamps
+  for what is logically the same sample.
+
+  If Mimir stored both: queries return duplicate results, graphs show doubled values.
+
+Solution — replica labels + Mimir deduplication:
+  Configure each Prometheus with a unique replica external label:
+
+    # Prometheus replica-0 values.yaml
+    prometheusSpec:
+      externalLabels:
+        cluster: production
+        replica: "0"           ← unique per replica
+
+    # Prometheus replica-1 values.yaml
+    prometheusSpec:
+      externalLabels:
+        cluster: production
+        replica: "1"           ← unique per replica
+
+  Both remote_write to Mimir with their replica label included.
+
+  Mimir's distributor receives both samples:
+    {cluster="production", replica="0", job="api", ...} value=14.2 t=1000000015.231
+    {cluster="production", replica="1", job="api", ...} value=14.2 t=1000000015.408
+
+  Mimir deduplication (via Ruler or query-frontend):
+    When querying, Mimir's query-frontend detects the replica label
+    Groups samples by all labels EXCEPT the replica label
+    For each group: keeps only one sample per scrape window
+    Returns deduplicated result to Grafana — no doubled values
+
+  The replica label is configured in Mimir's query configuration:
+    query_ingestor:
+      store_gateway:
+        sharding_enabled: true
+    frontend:
+      # Replica label to deduplicate on — matches externalLabels above
+      # Configured via --query-frontend.grpc-client-config
+
+Result: Grafana sees clean, single-copy data.
+        Either Prometheus failing causes no data gap — the other keeps feeding Mimir.
+```
+
 **HA Prometheus with Mimir remote_write:**
 
 ```yaml
@@ -2469,6 +3326,34 @@ prometheus:
 ---
 
 ## 14. Multi-Tenancy and Multi-Cluster
+
+### Demo Coverage — Multi-Tenancy and Multi-Cluster
+
+Multi-tenancy and multi-cluster are advanced topics covered in Phase 3:
+
+```
+Multi-Tenancy at Namespace Level  → Covered in Demo 17 (extended)
+  Namespace-scoped ServiceMonitors, PrometheusRules, AlertmanagerConfig CRDs.
+  RBAC isolation between teams. Grafana org/team separation.
+  All on Minikube — one cluster, multiple namespaces.
+
+Multi-Cluster Monitoring:
+  Pattern 1 (remote_write to Mimir) → Demo 22 (Grafana Mimir)
+    Each cluster has kube-prometheus-stack. Each Prometheus remote_writes
+    to a shared central Mimir with X-Scope-OrgID tenant header.
+    Grafana queries Mimir as the single backend for all clusters.
+    Recommended pattern for most production environments.
+
+  Pattern 2 (Thanos federation)    → Mentioned in Demo 22 as alternative
+    Thanos Sidecar per cluster, S3 block upload, central Thanos Querier.
+    Higher operational complexity than Pattern 1 — used when you need
+    local PromQL queries to remain available during central backend outage.
+
+  Pattern 3 (Agent mode)           → Demo 22 (PrometheusAgent CRD)
+    Prometheus in agent mode — scrape only, immediate remote_write, no TSDB.
+    Lowest resource footprint per cluster. All storage in central Mimir.
+    Best for large fleets (50+ clusters) where local storage cost is prohibitive.
+```
 
 ### Multi-Tenancy at Namespace Level (Single Cluster)
 
@@ -2553,44 +3438,55 @@ Setup:     built into Prometheus — no additional components
 Limit:     single node, no HA, limited retention
 ```
 
-### MinIO (Phase 3 — local S3-compatible storage)
+### MinIO — Status Update (Important)
+
+MinIO was previously planned as the local S3-compatible backend for Phase 3
+demos. **MinIO is no longer suitable for this demo series.** Here is why:
 
 ```
-What it is:    Open-source, Apache 2.0, S3-compatible object storage
-               Runs inside Kubernetes — no external S3 account needed
-Use in demos:  Loki backend (Demo 21), Mimir backend (Demo 22)
-Production use: On-premise, air-gapped environments, private cloud
+May 2025:    MinIO shipped a breaking release removing most management
+             features from the community edition web UI.
 
-Deployment:    helm install minio oci://registry-1.docker.io/bitnamicharts/minio
-API:           100% S3-compatible — Loki and Mimir config uses the same keys as AWS S3
-               Only the endpoint URL differs:
-               http://minio.monitoring:9000 vs s3.amazonaws.com
+October 2025: MinIO stopped publishing Docker images and pre-built binaries
+              for the community edition entirely.
 
-Backed by:     MinIO Inc — commercial entity with enterprise support
-CNCF:          Not a CNCF project but widely adopted in the CNCF ecosystem
+Current status: The MinIO community edition GitHub repository is in
+                maintenance mode — no new features, no pull requests
+                accepted, critical security fixes evaluated case-by-case only.
+
+What this means:
+  ❌ No new community Docker images — cannot pin to a reliable image
+  ❌ Maintenance mode — not suitable as a learning tool for current skills
+  ❌ Skills learned on MinIO are not transferable to its maintained state
+  ❌ Not recommended for any new production or learning environments
 ```
 
-### AWS S3 (Phase 3 EKS demos)
+**Decision for this demo series: Phase 3 demos use AWS S3 directly.**
 
-```yaml
-#Loki config:
-  storage_config:
-    aws:
-      s3: s3://ap-southeast-2/my-loki-bucket
-      region: ap-southeast-2
-  auth_config:
-    # Use IRSA (IAM Roles for Service Accounts) — no static credentials
-    # Pod's ServiceAccount is bound to an IAM role with S3 permissions
+This is actually the better learning outcome — AWS S3 is what production
+teams use, IRSA (IAM Roles for Service Accounts) is a required skill for
+EKS production work, and you are already learning AWS services in parallel.
+The configuration for Loki and Mimir with AWS S3 is identical to what
+you would use in a real corporate environment.
 
-#Mimir config:
-  blocks_storage:
-    backend: s3
-    s3:
-      bucket_name: my-mimir-bucket
-      region: ap-southeast-2
-      # IRSA-based auth — no static keys
+### AWS S3 — Phase 3 Storage Backend (Demos 21, 22, 24)
+
 ```
+Why AWS S3 for Phase 3:
+  ✅ Production standard — every corporate AWS environment uses S3
+  ✅ IRSA authentication — no static credentials, best practice for EKS
+  ✅ Identical config to what you deploy in real production
+  ✅ You are learning AWS services in parallel — directly applicable
+  ✅ Free tier: 5GB free, sufficient for demo data volumes
+  ✅ Loki and Mimir config uses standard AWS SDK — no MinIO quirks
 
+Cost control for demos:
+  Use a dedicated demo S3 bucket with lifecycle rules:
+    Transition to Glacier after 7 days
+    Delete after 30 days
+  Estimated cost: < $1/month for demo data volumes
+  Always run cleanup steps in each demo to remove objects
+```
 ---
 
 ## 16. Release Alignment — Chart vs Component Versions
@@ -2599,47 +3495,116 @@ The kube-prometheus-stack Helm chart bundles multiple components, each with
 independent release cycles. The chart maintainers test compatibility before
 each chart release.
 
+**Confirmed versions for chart 84.5.0 (verified via helm show chart):**
+
 ```
-Chart 68.4.4 bundles:
-  Prometheus 3.3.1          ← monthly releases by prometheus/prometheus
-  Prometheus Operator 0.82.2 ← monthly releases by prometheus-operator org
-  Alertmanager 0.28.1       ← quarterly releases by prometheus/alertmanager
-  Grafana 11.6.0             ← monthly releases by grafana/grafana
-  Node Exporter 1.9.0        ← quarterly releases by prometheus/node_exporter
-  kube-state-metrics 2.15.0  ← monthly releases by kubernetes/kube-state-metrics
+helm show chart prometheus-community/kube-prometheus-stack --version 84.5.0
+
+Chart 84.5.0 bundles:
+  Prometheus Operator       v0.90.1  ← appVersion (App Version field in Helm)
+  Prometheus                3.4.1    ← prom/prometheus:v3.4.1
+  Alertmanager              0.28.1   ← prometheus/alertmanager
+  Grafana                   12.3.0   ← via grafana sub-chart 12.3.0
+  Node Exporter             1.11.1   ← via prometheus-node-exporter sub-chart 4.55.0
+  kube-state-metrics        2.18.0   ← via kube-state-metrics sub-chart 7.3.0
+
+Sub-chart dependency versions (from helm show chart):
+  kube-state-metrics sub-chart:       7.3.0
+  prometheus-node-exporter sub-chart: 4.55.0
+  grafana sub-chart:                  12.3.0
+
+Minimum Kubernetes version: >=1.25.0-0
+
+Chart version vs App version — important clarification:
+  Chart 84.5.0 — App Version v0.90.1
+  The App Version field in Helm tracks the PROMETHEUS OPERATOR version,
+  NOT Prometheus itself. This confuses many engineers seeing "App Version v0.90.1"
+  and thinking Prometheus is v0.90.1.
+  Always run helm show chart to see all bundled component versions explicitly.
+
+  Verify bundled component image tags:
+    helm show values prometheus-community/kube-prometheus-stack --version 84.5.0 \
+      | grep -E "tag:|repository:" | head -40
 
 Release cadence:
-  kube-prometheus-stack: multiple releases per month (tracks component releases)
-  Prometheus:            monthly minor releases (e.g. 3.3.0 → 3.3.1 → 3.4.0)
-  Grafana:               monthly major/minor releases (11.5 → 11.6 → 12.0)
+  kube-prometheus-stack: multiple releases per month (tracks every component update)
+  Prometheus:            monthly minor releases (e.g. 3.3.x → 3.4.x → 3.5.x)
+  Grafana:               monthly major/minor releases (11.x → 12.x)
   Alertmanager:          less frequent, every 2–3 months
+  Node Exporter:         quarterly or on CVE
+
+How to always get the latest stable version:
+  helm repo update
+  helm search repo prometheus-community/kube-prometheus-stack | head -3
+  ← top result without pre-release suffix = latest stable
 
 How to track new releases:
   GitHub:      github.com/prometheus-community/helm-charts/releases
   Subscribe:   Watch → Custom → Releases on the GitHub repo
   ArtifactHub: artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack
-
-Chart version vs App version:
-  Chart 68.4.4 — App Version 0.82.2 (this is the Prometheus Operator version)
-  The App Version field in Helm tracks the Prometheus Operator version,
-  not Prometheus itself. This is a confusing naming choice by the chart maintainers.
-  Always check the chart's Chart.yaml to see all bundled component versions.
+  CHANGELOG:   github.com/prometheus-community/helm-charts/blob/main/charts/kube-prometheus-stack/CHANGELOG.md
 
 Upgrade process (production-safe):
-  1. Check changelog:
-     github.com/prometheus-community/helm-charts/blob/main/charts/kube-prometheus-stack/CHANGELOG.md
-  2. Check CRD migrations — some upgrades require CRD updates first
-  3. Test in staging with the new chart version
-  4. helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  1. Check CHANGELOG between current and target version for breaking changes
+  2. Check for CRD migrations — some chart upgrades require CRD updates first
+     grep "CRD" in the CHANGELOG between your versions
+  3. Test in staging with the new chart version before production
+  4. Run the upgrade:
+     helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
        --version <new-version> --values values.yaml -n monitoring
-  5. Verify all pods restart and reach Running state
-  6. Verify /targets shows all targets UP
+  5. Verify all pods restart and reach Running/Ready state
+     kubectl get pods -n monitoring
+  6. Verify all targets are UP in Prometheus
+     http://localhost:9090/targets
   7. Verify dashboards load in Grafana
+     http://localhost:3000/dashboards
 ```
 
 ---
 
-## 17. Official Resources
+## Key Takeaways
+
+1. **The kube-prometheus-stack Helm chart installs seven components with a single command — Prometheus, Alertmanager, Grafana, Prometheus Operator, Node Exporter, kube-state-metrics, and config-reloader sidecars.** Each component has a single defined role; none overlap. Understanding what each component does and does not do is the prerequisite for every debugging session.
+
+2. **The Prometheus Operator's job is to eliminate manual `prometheus.yaml` management — it watches CRDs and generates config automatically.** A ServiceMonitor, PodMonitor, or PrometheusRule applied anywhere in the cluster is detected by the Operator within seconds, translated into scrape config or rule config, and hot-reloaded into Prometheus without a pod restart. This is the only correct mental model for Prometheus on Kubernetes.
+
+3. **`serviceMonitorSelectorNilUsesHelmValues: false` is required for cross-namespace self-service monitoring.** The default (`true`) restricts Prometheus to discovering only ServiceMonitors labelled with the Helm release name — silently ignoring everything else. Setting it to `false` enables application teams to create ServiceMonitors in their own namespaces without coordination with the platform team. RBAC on the `servicemonitors` CRD controls access.
+
+4. **Every component in the stack exposes its own `/metrics` endpoint and is scraped by Prometheus automatically on install.** Grafana, Alertmanager, the Prometheus Operator, Node Exporter, kube-state-metrics, and Prometheus itself all appear as healthy targets in Prometheus Targets immediately after `helm install` — no additional configuration required.
+
+5. **StorageSpec PVCs and Alertmanager silence storage are not optional in any environment you care about.** Without `storageSpec`, a Prometheus pod restart (upgrade, OOMKill, node eviction) destroys all metric history. Without Alertmanager storage, all active silences are lost on every restart — re-paging on-call engineers for issues they already acknowledged. Both are configured in `values.yaml` before the first install.
+
+6. **The three control plane targets (kube-controller-manager, kube-etcd, kube-scheduler) show as DOWN on Minikube — this is expected and does not affect any demo.** These components bind their metrics ports to `127.0.0.1` on the Minikube VM, which is unreachable from inside a pod. All 25 demos in this series function correctly without these three targets.
+
+7. **`helm uninstall` does not delete PVCs — always clean them manually in demo environments.** Helm preserves PVCs by design to protect TSDB and silence data during upgrades. After `helm uninstall`, run `kubectl delete pvc -n monitoring --all` explicitly before reinstalling to avoid PVC name conflicts and stale data.
+
+---
+
+## Interview Prep
+
+**Q1. A new SRE asks: "why do we use kube-prometheus-stack instead of just installing Prometheus with a plain Helm chart or a Deployment manifest?" How do you answer?**
+
+A plain Prometheus install gives you the binary and nothing else. You still need to write every scrape config manually, update pod IPs every time a deployment rolls, manage Alertmanager config by hand, provision Grafana data sources and dashboards manually, and wire up Node Exporter and kube-state-metrics yourself. In a Kubernetes environment with dozens of services deploying daily, that becomes a full-time job for the platform team. kube-prometheus-stack installs the Prometheus Operator alongside Prometheus, which replaces all of that with CRD-based self-service: a ServiceMonitor CRD is all an application team needs to get scraped. It also ships with a hardened, tested values schema, pre-configured Grafana dashboards for Kubernetes internals, and bundled PrometheusRule alert sets that would take weeks to write from scratch. The stack approach gives you a production-grade foundation in one Helm command rather than six months of configuration work.
+
+**Q2. You inherit a kube-prometheus-stack installation. Prometheus is using 14 GB RAM and the team cannot explain why. Where do you start?**
+
+First, check current cardinality: query `prometheus_tsdb_head_series` in the Prometheus UI — this gives the total active time series count. Then run `topk(20, count by (__name__)({__name__=~".+"}))` to find the top 20 metrics by series count. Any single metric with more than 10,000–50,000 series on a small cluster is suspicious. Next, check which labels have the highest unique value counts using TSDB Status → Top 10 Label Values. Look for anything that should not be in a metric label: user IDs, request IDs, session IDs, URLs with query parameters, timestamps. Cross-reference recent ServiceMonitor changes with `kubectl get events -n monitoring --sort-by=.lastTimestamp`. Once the offending metric and label are identified, drop it with a `metricRelabeling` action: `drop` on the offending label using a regex, applied in the ServiceMonitor while the application team removes the label from their instrumentation code.
+
+**Q3. An application team's ServiceMonitor has been applied for 20 minutes and their service still does not appear in Prometheus Targets. Walk through your complete diagnostic.**
+
+Five checks in order. First: does the ServiceMonitor exist and is the selector correct? `kubectl describe servicemonitor <name> -n <namespace>` — verify `spec.selector.matchLabels` matches the labels on the target Service exactly. Second: does the Service have healthy Endpoints? `kubectl get endpoints <service> -n <namespace>` — an empty Endpoints list means pods are not Ready; the Operator has nothing to generate a scrape target from. Third: is `serviceMonitorSelectorNilUsesHelmValues` false? If true, Prometheus only discovers ServiceMonitors with `release: kube-prometheus-stack` label — missing that label causes silent rejection. Fourth: check the Prometheus Service Discovery page at `/service-discovery` — it shows endpoints Prometheus found but did not scrape (dropped by relabeling rules), which is different from not finding them at all. Fifth: check Prometheus Operator logs: `kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus-operator --tail=100` — reconciliation errors appear here including selector mismatches and RBAC denials.
+
+**Q4. What is the difference between Node Exporter and kube-state-metrics? Give a concrete example of a metric from each and when you would use it.**
+
+Node Exporter runs as a DaemonSet and reads host operating system metrics from `/proc` and `/sys` on each node — CPU time by mode, memory availability, disk I/O, filesystem usage, network bytes. A concrete metric: `node_memory_MemAvailable_bytes` — the current free memory on a node in bytes. Use this when answering "is this node running out of memory?" or "which node should I add to the cluster first?". kube-state-metrics talks to the Kubernetes API server and exposes the state of Kubernetes objects as metrics — deployment replica counts, pod phase, resource requests and limits, PVC bound status, HorizontalPodAutoscaler state. A concrete metric: `kube_deployment_status_replicas_available{deployment="order-api"}` — the number of available replicas for a deployment. Use this when answering "is my deployment fully rolled out?" or "are pods being evicted faster than they are being replaced?". The key distinction: Node Exporter sees the machine; kube-state-metrics sees the Kubernetes control plane's view of the workload.
+
+**Q5. Why does the kube-prometheus-stack Prometheus StatefulSet use a PVC instead of a regular volume? What breaks without it?**
+
+A PVC (PersistentVolumeClaim) provides storage that exists independently of the pod lifecycle. A regular `emptyDir` volume is destroyed when the pod is deleted for any reason. Prometheus restarts for many legitimate reasons: Helm upgrades (the StatefulSet is updated), node evictions (Kubernetes moves the pod to another node), OOMKills (Prometheus hits its memory limit and the OS kills it), or manual pod deletion for debugging. Without a PVC, every restart destroys the entire TSDB — all metric history is gone, all dashboard graphs go blank, all rate-based alert rules have no baseline to compare against for the duration of the range window. In production, losing the TSDB during an incident is catastrophic: the very moment you most need historical metrics to understand what changed is the moment you have no data. The PVC also survives `helm upgrade` — chart updates can replace the StatefulSet while the PVC remains mounted, preserving data continuity across version changes.
+
+---
+
+## Resources
 
 | Resource | URL |
 |---|---|
@@ -2663,5 +3628,125 @@ Upgrade process (production-safe):
 
 ---
 
-*This guide is a companion to [Demo 01 README](./README.md) and is referenced throughout the demo series.*
-*For the full 25-demo roadmap and stack rationale, see the [project root README](../README.md).*
+## Appendix — Anki Cards
+
+**00-kube-prometheus-stack-anki.csv:**
+
+````
+#deck:Opensource Observability Labs::Phase 1 - Foundations::00-kube-prometheus-stack
+#separator:Comma
+#columns:Front,Back,Tags
+"What seven components does kube-prometheus-stack install with a single helm install command?","Prometheus (StatefulSet, TSDB), Prometheus Operator (Deployment, watches CRDs), Alertmanager (StatefulSet, alert routing), Grafana (Deployment, dashboards), Node Exporter (DaemonSet, host OS metrics), kube-state-metrics (Deployment, Kubernetes API object state), config-reloader sidecars (in Prometheus and Alertmanager pods, trigger hot reloads on config change). Each has a single defined role.","demo00,stack-components,architecture"
+"What is the Prometheus Operator's job and what CRDs does it watch?","The Operator eliminates manual prometheus.yaml management. It watches four CRDs: ServiceMonitor (scrape a Service's pod endpoints), PodMonitor (scrape pods directly without a Service), PrometheusRule (alerting and recording rules), AlertmanagerConfig (per-namespace Alertmanager routing). When any CRD is created or updated, the Operator reconciles within seconds — queries the Kubernetes API, generates config, and triggers a hot reload via the /-/reload endpoint. No Prometheus restart required.","demo00,operator,crds"
+"What is the difference between Node Exporter and kube-state-metrics?","Node Exporter runs as a DaemonSet and reads host OS metrics from /proc and /sys — CPU time by mode, memory availability, disk I/O, filesystem space, network bytes. It sees the machine. kube-state-metrics talks to the Kubernetes API server and exposes object state as metrics — deployment replica counts, pod phase, resource limits, PVC status, HPA state. It sees what Kubernetes thinks is happening. Both are required for complete Kubernetes observability.","demo00,node-exporter,kube-state-metrics"
+"What does serviceMonitorSelectorNilUsesHelmValues do and what is the correct value for multi-team environments?","When true (default): Prometheus only discovers ServiceMonitors labelled with release: kube-prometheus-stack. Any ServiceMonitor without that label is silently ignored. When false: Prometheus discovers all ServiceMonitors cluster-wide regardless of labels. Correct value for multi-team environments: false — enables self-service monitoring where application teams create ServiceMonitors in their own namespaces without platform team involvement. Control access via RBAC on the servicemonitors CRD.","demo00,selector,multi-team,configuration"
+"Why do three control plane targets show as DOWN on Minikube and what is the fix?","kube-controller-manager, kube-etcd, and kube-scheduler bind their metrics ports to 127.0.0.1 on the Minikube VM by default. Prometheus runs inside a pod and cannot reach 127.0.0.1 on the host node — from the pod network namespace, 127.0.0.1 refers to the pod itself. Fix: SSH into the Minikube node and change --bind-address=127.0.0.1 to --bind-address=0.0.0.0 in the static pod manifests for each affected component. This is Minikube-specific — managed clusters (EKS, GKE, AKS) handle control plane metrics differently.","demo00,minikube,control-plane,known-issue"
+"What breaks if Prometheus has no storageSpec PVC configured?","Every Prometheus pod restart destroys the entire TSDB — all metric history is lost. Restarts happen for: helm upgrade (StatefulSet update), OOMKill, node eviction, manual pod deletion. Without history: all dashboard graphs go blank, rate-based alerts have no baseline data for their range windows, and incident investigations have no metrics to review. With storageSpec: a PVC is created that exists independently of the pod. The PVC survives upgrades, restarts, and node moves — data continuity is preserved.","demo00,storage,pvc,tsdb"
+"What does the config-reloader sidecar do in the Prometheus and Alertmanager pods?","config-reloader watches for changes to the generated ConfigMap containing prometheus.yaml or alertmanager.yaml. When a change is detected (triggered by the Prometheus Operator after a CRD reconciliation), config-reloader POSTs to the /-/reload HTTP endpoint of the main container. This triggers a hot config reload — Prometheus or Alertmanager picks up the new configuration without restarting the process. No TSDB data is lost, no scrape gap occurs, no active alerts are dropped.","demo00,config-reloader,hot-reload,operator"
+"What is the correct Grafana data source URL for connecting to Prometheus installed by kube-prometheus-stack?","http://kube-prometheus-stack-prometheus:9090 — this is the named ClusterIP service that routes to the Prometheus pod. Not prometheus-operated:9090 (that is the headless StatefulSet service for peer DNS resolution, not for client connections). The service name format is <helm-release-name>-prometheus. If the Helm release was installed with a different name, the service name changes accordingly.","demo00,grafana,datasource,prometheus"
+````
+
+## Appendix — Quiz
+
+**00-kube-prometheus-stack-quiz.md:**
+
+````markdown
+# Quiz — Demo 00: Kube-Prometheus-Stack Reference Guide
+
+> One correct answer per question unless stated otherwise.
+> Target: 80% or above before moving to Demo 01 hands-on lab.
+
+| Score | Action |
+|---|---|
+| 100% | Import Anki CSV and move to Demo 01 |
+| 80–90% | Review wrong answers, then proceed |
+| 60–70% | Re-read relevant sections, retry quiz |
+| Below 60% | Re-read full demo before proceeding |
+
+---
+
+**Q1. After running `helm install kube-prometheus-stack`, you open Prometheus Targets and immediately see targets for Grafana, Alertmanager, Node Exporter, and kube-state-metrics — all UP — without writing any scrape config. What is responsible for this?**
+
+A. kube-prometheus-stack uses static_configs in a bundled prometheus.yaml written directly into the chart
+B. The chart ships with ServiceMonitor CRDs for every component it installs; the Prometheus Operator reads these CRDs and generates scrape configs automatically on startup
+C. Prometheus on Kubernetes auto-discovers all pods with a `/metrics` endpoint by default using the Kubernetes SD role
+D. Grafana provisions the Prometheus data source and pushes target configs back to Prometheus via the API
+
+<details>
+<summary>Answer</summary>
+
+**B** — The chart bundles ServiceMonitor CRDs for every installed component. The Prometheus Operator detects these CRDs via its Kubernetes watch, queries the Endpoints API for each, generates prometheus.yaml scrape jobs, and triggers a hot reload. No manual scrape config required.
+
+Trap A: Static configs exist in the chart defaults but the Operator replaces them with dynamically generated CRD-based config. Trap C: Prometheus does not auto-discover all pods with /metrics — it only scrapes targets explicitly configured via ServiceMonitor, PodMonitor, or scrape_configs. Trap D: Grafana is a dashboard tool, not a Prometheus config manager.
+
+</details>
+
+---
+
+**Q2. A developer creates a ServiceMonitor in the `payments` namespace. After 15 minutes, the service does not appear in Prometheus Targets. `serviceMonitorSelectorNilUsesHelmValues` is set to `true`. What is wrong?**
+
+A. ServiceMonitors must be created in the `monitoring` namespace to be discovered
+B. The Prometheus Operator only watches the namespace where it is deployed
+C. The ServiceMonitor is missing the `release: kube-prometheus-stack` label required by the selector
+D. The developer must restart the Prometheus pod to pick up new ServiceMonitors
+
+<details>
+<summary>Answer</summary>
+
+**C** — When `serviceMonitorSelectorNilUsesHelmValues: true`, Prometheus only discovers ServiceMonitors with the label `release: kube-prometheus-stack` (the Helm release name). A ServiceMonitor without that label is silently ignored — no error, no warning, nothing in the Targets page. The fix is either: add the label to the ServiceMonitor, or set `serviceMonitorSelectorNilUsesHelmValues: false` to discover all ServiceMonitors cluster-wide.
+
+Trap A: ServiceMonitors can be in any namespace — namespaceSelector in the spec controls which Service namespaces are searched. Trap B: The Prometheus Operator watches all namespaces cluster-wide by default. Trap D: Prometheus hot-reloads via /-/reload — no pod restart is needed or correct.
+
+</details>
+
+---
+
+**Q3. What is the functional difference between Node Exporter and kube-state-metrics? Which one would you query to find out if a Deployment has fewer available replicas than desired?**
+
+A. They expose the same metrics from different sources; use either. Query either for replica information.
+B. Node Exporter covers host OS metrics from /proc and /sys; kube-state-metrics covers Kubernetes API object state. Use kube-state-metrics: `kube_deployment_status_replicas_available`
+C. Node Exporter covers Kubernetes object state; kube-state-metrics covers container metrics. Use Node Exporter for replica counts.
+D. Both are required together for every query — neither works independently
+
+<details>
+<summary>Answer</summary>
+
+**B** — Node Exporter reads host OS metrics (CPU, memory, disk, network) from `/proc` and `/sys` on each node. It has no knowledge of Kubernetes objects. kube-state-metrics talks to the Kubernetes API server and exposes object state: deployment replicas, pod phase, resource limits, PVC status. For "are available replicas less than desired?": `kube_deployment_status_replicas_available < kube_deployment_spec_replicas` — pure kube-state-metrics query.
+
+</details>
+
+---
+
+**Q4. You run `helm upgrade` to update the chart version. After the upgrade completes, all previously-configured Alertmanager silences are gone. What was missing from the original installation?**
+
+A. The `--wait` flag was not used during the original helm install
+B. Alertmanager storage was not configured in values.yaml — silences were stored in the pod's ephemeral memory and lost when the pod restarted during upgrade
+C. The Prometheus Operator version changed and reset the Alertmanager config
+D. Silences must be re-applied after every chart upgrade — this is expected behaviour
+
+<details>
+<summary>Answer</summary>
+
+**B** — Silences live in Alertmanager's memory by default. A pod restart — including the restart triggered by a `helm upgrade` that updates the StatefulSet spec — erases all in-memory state. The fix is `alertmanager.alertmanagerSpec.storage` in values.yaml, which provisions a PVC. With a PVC, silence state is written to disk and survives any number of pod restarts.
+
+Trap A: `--wait` controls whether the CLI blocks until pods are ready — it has no effect on data persistence. Trap C: The Operator manages Prometheus and Alertmanager config generation — it does not reset silence state. Trap D: Silences surviving upgrades is explicitly the expected behaviour when storage is configured correctly.
+
+</details>
+
+---
+
+**Q5. The Prometheus pod has 2/2 containers and the Alertmanager pod has 2/2 containers. What are the two containers in each?**
+
+A. Both pods: `main` container + `backup` container for HA
+B. Prometheus: `prometheus` + `config-reloader`. Alertmanager: `alertmanager` + `config-reloader`
+C. Prometheus: `prometheus` + `grafana-datasource`. Alertmanager: `alertmanager` + `grafana-datasource`
+D. Both pods: `main` container + `rbac-proxy` sidecar for authentication
+
+<details>
+<summary>Answer</summary>
+
+**B** — Both StatefulSets include a `config-reloader` sidecar alongside the main container. config-reloader watches the generated ConfigMap for changes (triggered by the Prometheus Operator after CRD reconciliation) and POSTs to `/-/reload` on the main container, enabling hot config reload without a process restart. Grafana has three containers (grafana + two provisioning sidecars) — the question is about Prometheus and Alertmanager specifically.
+
+</details>
+
+````
