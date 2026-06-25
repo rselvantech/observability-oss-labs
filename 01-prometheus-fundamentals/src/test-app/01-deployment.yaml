@@ -1,4 +1,4 @@
-# src/test-app/deployment.yaml
+# src/test-app/01-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,7 +8,7 @@ metadata:
     app: test-app
     version: "6.7.1"
 spec:
-  replicas: 3 # 3 replicas so we can observe per-pod metrics
+  replicas: 3     # 3 replicas so we can observe per-pod metrics
   selector:
     matchLabels:
       app: test-app
@@ -22,16 +22,21 @@ spec:
         - name: test-app
           image: ghcr.io/stefanprodan/podinfo:6.7.1
           ports:
-            - name: http # HTTP API port
+            - name: http           # HTTP API port
               containerPort: 9898
-            - name: http-metrics # Prometheus /metrics port
+            - name: http-metrics   # Prometheus /metrics port
               containerPort: 9797
-            - name: grpc # gRPC port
+            - name: grpc           # gRPC port
               containerPort: 9999
           env:
             - name: PODINFO_UI_MESSAGE
               value: "Hello from Observability Demo 01"
-            - name: PODINFO_PORT_METRICS # ← this is the only addition
+
+            # REQUIRED: tells podinfo to expose /metrics on a dedicated port 9797.
+            # Without this, podinfo does not listen on port 9797 and the
+            # ServiceMonitor scrape fails with "connection refused".
+            # Always set PODINFO_PORT_METRICS when using a separate metrics port.
+            - name: PODINFO_PORT_METRICS
               value: "9797"
           resources:
             requests:

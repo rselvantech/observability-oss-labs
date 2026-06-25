@@ -281,6 +281,14 @@ kube-state-metrics no** — but both are tightly integrated into the Prometheus 
 │  not under prometheus. It is a Kubernetes SIG project, not a Prometheus      │
 │  project. SIG-instrumentation owns it and drives its development.            │
 │                                                                              │
+│  What is a Kubernetes SIG? A Special Interest Group (SIG) is a sub-group     │
+│  within the Kubernetes open-source project where engineers with shared        │
+│  domain expertise own a specific area of Kubernetes. SIG-instrumentation     │
+│  owns metrics, logging, tracing, and eventing standards — including          │
+│  kube-state-metrics and the Kubernetes metrics API. SIGs are funded by       │
+│  their member companies (Google, Red Hat, Microsoft, etc.) paying the        │
+│  engineers' salaries, not by CNCF directly.                                  │
+│                                                                              │
 │  Relationship: it is a Kubernetes-native exporter that produces metrics      │
 │  in Prometheus format. It depends on Prometheus for consumption but is       │
 │  not owned or governed by the Prometheus project.                            │
@@ -1222,6 +1230,17 @@ StatefulSet: alertmanager-kube-prometheus-stack-alertmanager-0
   each other reliably after restarts. StatefulSet provides this stable identity.
   A Deployment would assign random pod names — gossip peer discovery would break.
 
+  How the gossip mesh works for deduplication (in HA mode):
+  Prometheus sends the same fired alert to ALL Alertmanager replicas.
+  Without gossip: all three replicas would each send a Slack notification —
+  three messages for one alert. With the gossip mesh (Memberlist protocol on
+  port 9094): replicas continuously share state about which alerts have been
+  notified and which silences are active. When replica-0 sends a notification,
+  it gossips this to replica-1 and replica-2, which suppress their own sends.
+  Result: exactly one notification, regardless of how many replicas are running.
+  Silences created on any one replica are synchronised to all others within
+  seconds via the same gossip mechanism.
+
 Deployment: kube-prometheus-stack-grafana
   Purpose:    Dashboard visualisation and unified alerting UI
   Storage:    1Gi PVC (Grafana SQLite database)
@@ -1291,6 +1310,9 @@ kube-prometheus-stack-prometheus
   ClusterIP:  10.96.181.154
   Ports:      9090 (Prometheus UI + query API)
               8080 (metrics — Prometheus self-monitoring endpoint)
+              Note: port 9090 is the primary API/UI; port 8080 is a separate
+              endpoint that exposes Prometheus's own operational metrics
+              (goroutines, memory, request counts) for Prometheus to scrape itself.
   Used by:    Grafana → queries PromQL via this service
               kubectl port-forward → your local browser access
               Prometheus Operator → validates config reload via /-/reload
@@ -1301,6 +1323,9 @@ kube-prometheus-stack-alertmanager
   ClusterIP:  10.105.187.53
   Ports:      9093 (Alertmanager API + UI)
               8080 (metrics — Alertmanager self-monitoring endpoint)
+              Note: port 9093 is the primary API/UI; port 8080 is a separate
+              endpoint exposing Alertmanager's own operational metrics
+              for Prometheus to scrape (alerts received, notifications sent, etc.).
   Used by:    Prometheus → sends fired alerts via POST /api/v2/alerts
               kubectl port-forward → your local browser access
               amtool CLI → silence management
@@ -1322,7 +1347,11 @@ kube-prometheus-stack-operator
 
 kube-prometheus-stack-kube-state-metrics
   ClusterIP:  10.100.112.104
-  Port:       8080 (/metrics endpoint)
+  Port:       8080 (/metrics endpoint — the primary and only port)
+              Note: unlike Prometheus and Alertmanager, kube-state-metrics has
+              no UI and no separate self-monitoring port. Port 8080 is its
+              sole interface: a /metrics endpoint serving Kubernetes object
+              state metrics. Prometheus scrapes this port every 15 seconds.
   Used by:    Prometheus → scrapes Kubernetes object state metrics every 15s
 
 kube-prometheus-stack-prometheus-node-exporter
@@ -1340,7 +1369,11 @@ prometheus-operated
   Created by: Prometheus Operator automatically when it creates the Prometheus StatefulSet
   Used by:    Kubernetes DNS — provides stable DNS name for each Prometheus replica:
                 prometheus-kube-prometheus-stack-prometheus-0.prometheus-operated.monitoring.svc
-              Thanos sidecar (if used) — discovers Prometheus peers for federation
+              Thanos sidecar (if used) — discovers Prometheus peers for federation.
+              Thanos is an open-source project that extends Prometheus for long-term
+              storage and global querying across multiple instances. A Thanos Sidecar
+              runs alongside Prometheus and uses this headless service to discover
+              peers for data deduplication and query fan-out. Covered in Demo 22.
               ⚠️  NOT used for kubectl port-forward or UI access
               ⚠️  NOT used by Grafana — Grafana uses kube-prometheus-stack-prometheus
 
@@ -1379,14 +1412,25 @@ kube-prometheus-stack-grafana                              1     grafana.ini —
                                                                  Sets: server root_url, auth, unified_alerting,
                                                                  SMTP, feature flags, security settings
 
-kube-prometheus-stack-grafana-config-dashboards            1     Grafana dashboard provisioning config
-                                                                 Tells Grafana which directories to watch
-                                                                 for dashboard JSON files to auto-load
+kube-prometheus-stack-grafana-config-dashboards            1     Dashboard provider config — tells Grafana
+                                                                 which directories to scan for dashboard JSON
+                                                                 files and sets up the provisioning framework.
+                                                                 This CM defines WHERE and HOW to load
+                                                                 dashboards. The grafana-sc-dashboard sidecar
+                                                                 then populates WHAT to load into those paths.
+                                                                 These two work together: the CM sets up the
+                                                                 framework; the sidecar fills it with content.
+                                                                 → Hands-on dashboard provisioning: Demo 04
 
-kube-prometheus-stack-grafana-datasource                   1     Prometheus data source definition
-                                                                 Auto-provisioned on first boot by
-                                                                 grafana-sc-datasources sidecar.
-                                                                 Points Grafana at kube-prometheus-stack-prometheus:9090
+kube-prometheus-stack-grafana-datasource                   1     Prometheus data source definition.
+                                                                 Loaded by the grafana-sc-datasources sidecar
+                                                                 into /etc/grafana/provisioning/datasources/.
+                                                                 Tells Grafana to connect to Prometheus at
+                                                                 http://kube-prometheus-stack-prometheus:9090.
+                                                                 This CM defines the datasource connection;
+                                                                 the sidecar watches for it and loads it
+                                                                 into Grafana without a restart.
+                                                                 → Hands-on datasource configuration: Demo 04
 
 ─────────────────────────── Group 2: Pre-loaded Grafana Dashboards ─────────────────────
 kube-prometheus-stack-alertmanager-overview                1     Alertmanager status dashboard
@@ -1458,9 +1502,21 @@ Default scan interval: 5 seconds
   The grafana-sc-dashboard sidecar polls the Kubernetes API every 5 seconds
   for ConfigMap changes with label grafana_dashboard=1.
 
-  Watch method: WATCH (long-poll) by default — Kubernetes pushes events
-  to the sidecar immediately when a ConfigMap changes.
-  The 5-second interval is the fallback polling rate for missed events.
+  Watch method: WATCH vs LIST — two ways the sidecar can detect changes:
+
+    WATCH (event-driven, default):
+      The sidecar opens a persistent connection to the Kubernetes API server.
+      When a ConfigMap is created, updated, or deleted, the API server pushes
+      the event to the sidecar immediately — no polling delay.
+      More efficient: no unnecessary API calls when nothing changes.
+      The 5-second interval is the fallback reconnect rate if the watch drops.
+
+    LIST (polling):
+      The sidecar periodically calls the Kubernetes API to list all matching
+      ConfigMaps and compares the result to what it already has loaded.
+      Less efficient: makes API calls every interval even when nothing changed.
+      Use LIST only in environments where persistent watch connections are
+      unreliable (some network proxies close long-lived connections).
 
 Configuration in values.yaml:
   grafana:
@@ -1473,8 +1529,18 @@ Configuration in values.yaml:
         watchMethod: WATCH             ← WATCH (event-driven) or LIST (polling)
         searchNamespace: ALL           ← watch ALL namespaces (or list specific)
         provider:
-          name: sidecarProvider
-          allowUiUpdates: false        ← prevent UI edits overwriting GitOps source
+          name: sidecarProvider        ← the Grafana dashboard provider name
+                                          used internally by Grafana to register
+                                          this provisioning source. Identifies
+                                          which provider loaded each dashboard
+                                          for reload tracking and UI display.
+          allowUiUpdates: false        ← when false: edits made in the Grafana UI
+                                          are NOT saved back to the JSON source.
+                                          This enforces GitOps discipline — the
+                                          ConfigMap is the source of truth.
+                                          Setting true would allow UI edits but
+                                          they would be overwritten on the next
+                                          ConfigMap sync, causing confusion.
 
 For datasources sidecar (grafana-sc-datasources):
   grafana:
@@ -1506,8 +1572,16 @@ Where to check for dashboard load errors:
     "Dashboard not provisioned"          → dashboard loaded but has query errors
 
 Validate JSON locally before applying:
+  # Basic JSON syntax check (catches malformed JSON but not Grafana schema errors)
   cat my-dashboard.json | python3 -m json.tool > /dev/null && echo "valid"
   OR use: jq . my-dashboard.json > /dev/null
+
+  # Grafana schema validation (recommended — catches dashboard-specific errors):
+  # Install grafana-dashboard-linter (official Grafana CLI tool):
+  go install github.com/grafana/dashboard-linter@latest
+  dashboard-linter lint my-dashboard.json
+  # Catches: missing datasource references, invalid panel types, deprecated fields
+  # Much more thorough than JSON syntax check alone
 ```
 
 ### About Secrets
@@ -1524,6 +1598,7 @@ kube-prometheus-stack-grafana                                                   
   Used by:  Grafana pod — mounts as environment variables for admin login
   ⚠️  In production: use adminCredentialsSecret to reference an external secret
        managed by Vault or AWS Secrets Manager — never commit these values to Git
+  → Secrets management scenarios and production patterns: Demo 07, Demo 13
 
 ─────────────────────────── Group 2: Alertmanager ────────────────────────────────────
 alertmanager-kube-prometheus-stack-alertmanager                                  Opaque
@@ -1532,6 +1607,7 @@ alertmanager-kube-prometheus-stack-alertmanager                                 
   Mounted at:  /etc/alertmanager/config/ inside the Alertmanager pod
   Updated:     Operator regenerates and replaces this Secret when AlertmanagerConfig
                CRDs change. config-reloader sidecar detects change and reloads.
+  → Alertmanager config, routing, and receiver secrets: Demo 07
 
 alertmanager-kube-prometheus-stack-alertmanager-cluster-tls-config               Opaque
   Contains: TLS configuration for Alertmanager cluster gossip mesh (peer-to-peer)
@@ -1609,7 +1685,14 @@ Container: prometheus
   Flags:    --config.file=/etc/prometheus/config_out/prometheus.env.yaml
             --storage.tsdb.path=/prometheus
             --storage.tsdb.retention.time=10d
-            --web.enable-lifecycle          ← enables /-/reload API
+              Deletes TSDB blocks whose data is older than 10 days.
+              Enforced at compaction time — old blocks are marked and removed.
+              Increase for longer local retention; use Mimir for multi-year storage.
+            --web.enable-lifecycle
+              Enables the /-/reload and /-/quit HTTP endpoints.
+              Without this flag, the config-reloader sidecar cannot trigger
+              hot reloads — config changes would require a full pod restart.
+              This flag is REQUIRED for the config-reloader to function.
             --enable-feature=native-histograms
   Volume mounts:
     /prometheus           ← PVC (TSDB data — persists across restarts)
@@ -1620,8 +1703,24 @@ Container: config-reloader
   Binary:   /bin/prometheus-config-reloader
   Watches:  the config Secret and rule ConfigMaps via inotify
   On change: POST to http://localhost:9090/-/reload
-  Purpose:  Prometheus reloads config without a pod restart
-            A restart would lose the 2-hour head block data
+  Purpose:  Prometheus reloads config without a pod restart.
+
+  Reload vs restart — a critical distinction:
+    Restart: the pod process exits and is recreated by Kubernetes.
+      TSDB head block (last ~2 hours, held in RAM) is lost.
+      WAL is replayed on the new process — startup takes 10–30 seconds.
+      Scraping, querying, and rule evaluation all pause during restart.
+      Always triggers if the StatefulSet spec changes (e.g. helm upgrade
+      that changes container args or image).
+
+    Hot reload (/-/reload): the RUNNING Prometheus process receives an HTTP POST.
+      It re-reads the config file from disk, validates it, and applies it.
+      TSDB head block stays in RAM — no data loss.
+      Scraping continues uninterrupted during the reload.
+      Rule evaluation continues — no alert state is lost.
+      Takes < 1 second. Zero downtime.
+      Triggered by: config-reloader detecting a Secret or ConfigMap change.
+      Only possible because --web.enable-lifecycle flag is set.
 ```
 
 **Prometheus internal subsystems:**
@@ -1650,131 +1749,210 @@ Query engine
   Used by Grafana, the Prometheus UI, and alert rule evaluation
 ```
 
-### TSDB Storage — Key Terms and Data Locations
+### Prometheus TSDB Storage Internals - Reference
 
-Understanding where data lives at each stage helps you reason about
-disk usage, query performance, crash recovery, and what survives a restart.
+This section explains where Prometheus metric data physically lives at each stage of its
+lifecycle, why there are multiple copies of "recent" data, and what survives a pod restart,
+a crash, or a PVC deletion. It consolidates and corrects several earlier explanations that
+disagreed with each other on the role of `chunks_head/` and the compaction schedule.
 
-```
-Term              What it is
-────────────────────────────────────────────────────────────────────────────
-WAL               Write-Ahead Log — a sequential append-only log on disk.
-(Write-Ahead Log) Every incoming sample is written here first before anything
-                  else. Provides crash safety: if Prometheus dies mid-scrape,
-                  the WAL is replayed on restart to recover all samples that
-                  were not yet flushed to a block.
-                  Location: /prometheus/wal/
-                  Files:    00000001, 00000002 ... (segments, each up to 128MB)
-                  Survives: pod restart ✅ (on PVC)  |  pod deletion ❌ (no PVC)
+**The Four Components**
 
-Head Block        The in-memory, writable, current block. All samples after
-                  WAL write go into the head block for fast querying.
-                  Covers approximately the last 2 hours of data.
-                  Compressed in memory using Gorilla XOR compression.
-                  Also memory-mapped to disk (chunks_head/) for crash recovery.
-                  Location: RAM + /prometheus/chunks_head/ (mmap)
-                  Survives: pod restart ✅ (replayed from WAL + chunks_head)
+| Component | What it is | Location |
+|---|---|---|
+| **WAL** (Write-Ahead Log) | Sequential, append-only log. Every incoming sample is written here *first*, before anything else. It is the sole crash-safety guarantee — if Prometheus dies mid-scrape, the WAL is replayed on restart to rebuild whatever was lost from RAM. | `/prometheus/wal/` |
+| **Head Block** | The current, mutable, in-memory block. All samples go here after the WAL write, and this is what queries against recent data read from. Compressed in RAM using Gorilla-style encoding (delta-of-delta timestamps, XOR'd values). | RAM |
+| **chunks_head/** (m-mapped head chunks) | As individual chunks inside the head block fill up and become immutable (no longer being appended to), Prometheus writes them to disk and memory-maps them, freeing RAM while keeping them fast to access. The one chunk still being actively written stays in pure heap memory. | `/prometheus/chunks_head/` |
+| **On-disk blocks** | Immutable, read-only 2-hour blocks created when the head is flushed. Each contains compressed samples, an index, metadata, and tombstones (see §2). | `/prometheus/<ULID>/` |
 
-On-disk blocks    Immutable, read-only blocks created when the head block
-                  is flushed every 2 hours. Each block contains:
-                    chunks/  → compressed raw samples (float64 + timestamp)
-                    index    → inverted index: label → series → chunk offset
-                    meta.json → block metadata: min/max time, stats, ULID
-                    tombstones → soft-delete markers for deleted series
-                  Location: /prometheus/<ULID>/ (e.g. 01HPB5X2YJ.../)
-                  Survives: pod restart ✅ | pod deletion ❌ (without PVC)
+A fifth background process, the **compactor**, doesn't store data itself but merges blocks together (§5) and enforces retention.
 
-Compactor         Background goroutine that merges small blocks into larger
-                  ones to reduce file count and improve query performance.
-                  Merge schedule: 2h → 6h → 24h → 48h → up to retention limit
-                  Also handles: tombstone cleanup, retention enforcement,
-                  deletion of blocks older than --storage.tsdb.retention.time
-```
-
-**Data Flow 1: On Startup or Restart**
+**Anatomy of an On-Disk Block**
 
 ```
-Prometheus pod starts
-        │
-        ▼
-  Load config from /etc/prometheus/config_out/prometheus.env.yaml
-        │
-        ▼
-  Open WAL at /prometheus/wal/
-        │
-        ├── WAL segments present? (crash recovery path)
-        │       │
-        │       ▼
-        │   Replay WAL segments sequentially
-        │   Re-insert all samples into new head block in memory
-        │   Verify checksums — corrupted segments skipped with warning
-        │       │
-        │       ▼
-        │   Head block rebuilt from WAL  ✅
-        │
-        ├── chunks_head/ present? (normal restart path)
-        │       │
-        │       ▼
-        │   Memory-map chunks_head/ files into head block
-        │   Much faster than full WAL replay for recent data
-        │
-        ▼
-  Load existing on-disk blocks from /prometheus/<ULID>/
-  (these are immutable — no replay needed, just open and map)
-        │
-        ▼
-  Prometheus ready — all historical data available for queries
-  New scrapes resume, new samples go to WAL then head block
+/prometheus/01HPB5X2YJVZWCA4QXZG6T3ZSF/
+├── chunks/
+│   └── 000001          # compressed samples, segment files up to 512MB each
+├── index                # inverted index: label → series → chunk offset
+├── meta.json             # min/max time, series/sample counts, compaction history
+└── tombstones            # soft-delete markers
 ```
 
-**Data Flow 2: Live Scraping (Every 15 Seconds)**
+- **index** — maps every label/value combination to the series that have it, and each series to its byte offset inside the chunks file. This is what lets a query for `http_requests_total{status="200"}` find the right bytes without scanning the whole block.
+- **meta.json** — stores the block's time range, sample/series counts, and which earlier blocks were merged to produce it. The query engine uses this to skip blocks that don't overlap the requested time range without opening them.
+- **tombstones** — when a series is deleted via the admin API, Prometheus does not rewrite the block immediately (too expensive). It writes a tombstone record instead; the series is filtered out at query time and physically removed only during the block's next compaction.
+- **ULID** (Universally Unique Lexicographically Sortable Identifier) — a 26-character ID whose first ~10 characters encode a millisecond timestamp, so block directories sort in creation order alphabetically.
+
+On the read side: for on-disk blocks, the **index** is memory-mapped for fast label lookups, while **chunk** data is read from disk on demand through the OS page cache. Only the active head block is fully resident in RAM — this is why range queries over weeks of history are slower than queries over the last couple of hours.
+
+**Why There Are Three Copies of `Recent` Data**
+
+A natural question is why the same sample briefly exists in three places at once. Each serves a different purpose:
+
+| Layer | Purpose | Lost on crash? |
+|---|---|---|
+| WAL (disk) | Durability guarantee — sequential writes, fsync'd, replayed to rebuild everything else | No — this is the one thing that's never lost |
+| Head block (RAM) | Fast queryability for recent data | Yes — rebuilt from WAL on restart |
+| chunks_head/ (mmap) | Speeds up *every* restart by letting Prometheus skip re-decoding chunks it has already flushed | Only if found corrupted on reload |
+
+**Important correction:** earlier explanations characterized `chunks_head/` as a "crash recovery" path that gets *bypassed* on a crash in favor of full WAL replay. That's not quite right. On **every** restart — crash or graceful — Prometheus first replays whatever valid m-mapped chunks exist in `chunks_head/`, then replays only the WAL records *after* the timestamp those chunks already cover. This is what produces the 15–30% faster startup commonly cited for this feature. The fallback to full WAL replay happens specifically when the m-mapped chunk files are found corrupted or out of sequence — at which point Prometheus discards them and reconstructs that data from the WAL instead, so no data loss occurs either way. The distinction is "corrupted vs. valid," not "crash vs. graceful restart."
+
+**On-Disk Layout (Full Tree)**
 
 ```
-Scraper fires HTTP GET /metrics → target responds with OpenMetrics text
-        │
-        ▼
-  Parse response → list of (metric_name, labels, value, timestamp) tuples
-        │
-        ▼
-  Step 1: Write to WAL  ──────────────────────────────────────────────────
-  Each sample appended to current WAL segment (sequential write, very fast)
-  WAL segment rotates when it reaches 128MB
-  fsync after each write — guarantees durability even on power loss
-        │
-        ▼
-  Step 2: Write to Head Block  ────────────────────────────────────────────
-  Sample inserted into the in-memory head block
-  Gorilla XOR compression applied (delta-of-delta timestamps, XOR values)
-  Head block index updated — new series get a new entry
-        │
-        ▼
-  Step 3: Head block full? (≈2 hours of data)  ────────────────────────────
-  If NO: continue — next scrape goes back to Step 1
-  If YES:
-        │
-        ▼
-  Step 4: Flush head block to new on-disk block  ──────────────────────────
-  New 2-hour immutable block written to /prometheus/<new-ULID>/
-  WAL truncated — segments covered by the new block deleted
-  chunks_head/ updated — old mmap files removed
-        │
-        ▼
-  Step 5: Compactor runs (background)  ────────────────────────────────────
-  Periodically merges adjacent 2h blocks → 6h → 24h → 48h
-  Older merged blocks deleted — only the merged result kept
-  Retention enforcer deletes blocks older than retention.time (10d)
-        │
-        ▼
-  Query engine can now read from both:
-    Head block (in memory) → recent data, fastest queries
-    On-disk blocks         → older data, read from disk/page cache
-
-Storage locations summary:
-  /prometheus/wal/            WAL segments (crash safety buffer)
-  /prometheus/chunks_head/    Head block mmap files (fast restart recovery)
-  /prometheus/<ULID>/         Immutable on-disk blocks (all historical data)
-  All under: PVC mountPath /prometheus (storageSpec in values.yaml)
+/prometheus/                                  ← --storage.tsdb.path
+│
+├── wal/
+│   ├── 00000001                              ← segment, max 128MB, fsync'd on write
+│   ├── 00000002                              ← new segment created when previous fills
+│   └── checkpoint.00000001/                  ← periodic snapshot; lets replay skip older segments
+│
+├── chunks_head/
+│   └── 000001                                ← completed head chunks, memory-mapped
+│
+├── 01HPB5X2YJVZWCA4QXZG6T3ZSF/                ← compacted block (ULID, time-ordered)
+│   ├── chunks/000001
+│   ├── index
+│   ├── meta.json
+│   └── tombstones
+│
+└── 01HPC7MNZAKQTB2JVZW3Y8P4RX/                ← another compacted block
+    └── ...
 ```
+
+**Survival matrix:**
+
+| Path | Pod restart | Helm upgrade | Node eviction | PVC deletion |
+|---|---|---|---|---|
+| `wal/` | ✅ | ✅ | ✅ | ❌ |
+| `chunks_head/` | ✅ | ✅ | ✅ | ❌ |
+| `<ULID>/` blocks | ✅ | ✅ | ✅ | ❌ |
+| Head block (RAM only) | ✅ (rebuilt) | ✅ (rebuilt) | ✅ (rebuilt) | ❌ |
+
+All four depend entirely on the PVC backing `/prometheus` — without a PVC, every restart loses everything, since there is nothing on disk to replay.
+
+**Data Flow: Live Scraping** (every `scrape_interval`, typically 15s)
+
+```
+Scraper fires HTTP GET against a target's /metrics endpoint
+        │
+        ▼
+Target responds with OpenMetrics text:
+  node_cpu_seconds_total{cpu="0",mode="idle"} 39284.49
+  node_memory_MemAvailable_bytes 5536866304
+  ... (one line per series)
+        │
+        ▼
+Parsed into (metric_name, labels, value, timestamp) tuples
+        │
+        ▼
+Step 1 — Write to WAL
+  Sample appended sequentially to the current WAL segment, then fsync'd.
+  This is the durability checkpoint: if Prometheus dies right after this
+  step, the sample is recoverable on restart.
+        │
+        ▼
+Step 2 — Write to Head Block
+  Same sample inserted into the in-memory head. Gorilla-style compression
+  applied (delta-of-delta timestamps, XOR'd values). New label combinations
+  get a new series entry; existing series append to their chunk.
+  This is what makes recent-data queries fast — no need to parse the WAL.
+        │
+        ▼
+Step 3 — Individual chunk full?
+  When a series' current chunk fills, it's cut, made immutable, and
+  written to chunks_head/ via mmap, freeing its RAM footprint.
+        │
+        ▼
+Step 4 — Head block's 2-hour window complete?
+  No  → next scrape returns to Step 1
+  Yes → flush the entire head to a new immutable block at /prometheus/<new-ULID>/
+        WAL segments fully covered by that block are truncated (checkpointed first)
+        chunks_head/ files superseded by the new block are removed
+        │
+        ▼
+Step 5 — Compactor runs in the background (see section below)
+```
+
+**Compaction Lifecycle**
+
+The compactor merges adjacent blocks into exponentially larger ones, on a leveled
+(LSM-tree-style) schedule, by default:
+
+```
+2h → 6h → 18h → 54h → 162h → 486h   (each level = 3× the previous)
+```
+
+Each level merges three blocks from the level below once they all fall within the same
+time bucket. The compactor will not prematurely merge the newest blocks that don't yet
+span a full bucket. After a successful merge, the smaller source blocks are deleted —
+only the result is kept. Compaction stops growing block size once it would exceed
+**10% of total retention, or 31 days, whichever is smaller**, regardless of how long
+retention is configured.
+
+The same background process also:
+- enforces `--storage.tsdb.retention.time` / `.size`, deleting blocks (and tombstoned data) entirely past those windows — note this cleanup can take up to ~2 hours to run after data technically expires;
+- rewrites tombstoned series out of a block permanently the next time that block is compacted.
+
+**Data Flow: Startup / Restart** (Unified — Crash or Graceful)
+
+```
+Prometheus starts
+        │
+        ▼
+Load existing immutable on-disk blocks from /prometheus/<ULID>/
+  (read-only, just opened and index-mapped — no replay needed)
+        │
+        ▼
+Attempt to replay chunks_head/ (m-mapped head chunks)
+  ├── Valid / in-sequence → fast path: chunks loaded without re-decoding
+  └── Corrupted / out-of-sequence → discard mmap files entirely, fall back
+      to reconstructing that range from the WAL (no data loss, just slower)
+        │
+        ▼
+Replay remaining WAL records — only the tail after whatever chunks_head/
+already covered. Checksums verified; a corrupted WAL segment stops replay
+at that point with a warning (no silent data invention past it).
+        │
+        ▼
+Head block rebuilt in memory; series-to-chunk-offset mappings restored by
+re-reading each m-mapped chunk's header
+        │
+        ▼
+Prometheus ready — historical blocks + reconstructed head both queryable
+New scrapes resume: WAL write → head block write (back to §5)
+```
+
+**Frequently Re-asked Points (Validated)**
+
+- **"Is only the head chunk in memory at any time?"** Mostly — the *currently active* chunk per series is RAM-resident. Chunks that have filled up but belong to the still-open head are written to `chunks_head/` and accessed via mmap rather than kept fully in heap memory. On-disk blocks beyond the head are never bulk-loaded into RAM; only their index is mapped, with chunk bytes pulled from disk/page-cache on demand.
+- **"Does the head block cover a rolling last-2-hours window?"** Not exactly — it covers a fixed 2-hour window aligned to clock boundaries since the Unix epoch (e.g., 00:00–02:00, 02:00–04:00), not a sliding window measured backward from "now."
+- **"What happens to deleted series?"** A tombstone is written immediately; the series is hidden from queries right away but its bytes are only physically removed from disk the next time that block is compacted.
+- **No blocks exist yet — is that a bug?** No. On-disk blocks only appear once the head's 2-hour window has been flushed at least once. For an instance running less than ~2 hours, `promtool tsdb list /prometheus` correctly reporting "(no blocks)" is expected, not an error.
+
+**Verifying State Without Waiting for a Block Flush**
+
+```bash
+# Confirm the head block is actively ingesting (works immediately, no blocks needed):
+curl -s 'localhost:9090/api/v1/query?query=prometheus_tsdb_head_series' \
+  | jq '.data.result[0].value[1]'
+# Expect a non-zero series count, e.g. "29802"
+
+# Full TSDB status (head stats, cardinality, label value counts):
+curl -s localhost:9090/api/v1/status/tsdb | python3 -m json.tool
+
+# List on-disk blocks once they exist:
+kubectl exec -n monitoring $PROM_POD -c prometheus -- promtool tsdb list /prometheus
+```
+
+**Quick Reference**
+
+| Storage | Holds | Crash-safe | Restart behavior |
+|---|---|---|---|
+| WAL | Every raw sample, sequential | Always | Replayed (tail only, after chunks_head/ catch-up) |
+| Head block (RAM) | Active queryable data, ~last 2h-aligned window | No — rebuilt | Reconstructed from chunks_head/ + WAL tail |
+| chunks_head/ (mmap) | Completed-but-not-yet-block head chunks | Yes, unless found corrupted | Used on every restart type; discarded only if invalid |
+| On-disk blocks | Immutable compacted history | Always | Opened directly, no replay |
 
 ### Prometheus Operator
 
@@ -1783,6 +1961,11 @@ It uses client-go informers to watch CRD objects cluster-wide and reconcile
 the Prometheus and Alertmanager configuration to match the desired state.
 The core idea: you declare *what you want* in CRD YAML; the Operator
 figures out *how to make it happen* in Prometheus/Alertmanager config.
+
+> **values.yaml deep-dive:** The Prometheus Operator is configured via the
+> `prometheus.prometheusSpec` and `alertmanager.alertmanagerSpec` sections
+> of `values.yaml`. Every parameter is explained with production context in
+> [Demo 01 — Step 4: Create the Helm Values File](../01-prometheus-fundamentals/README.md#step-4-create-the-helm-values-file).
 
 **How the Operator works — reconcile loop:**
 
@@ -2162,6 +2345,21 @@ thanosrulers.monitoring.coreos.com          2026-05-07T01:56:12Z
 Each CRD replaces a specific manual configuration task that would otherwise
 require editing files inside the Prometheus or Alertmanager pods.
 
+**Where each CRD is covered in hands-on depth:**
+
+| CRD | First hands-on demo | What you build |
+|---|---|---|
+| ServiceMonitor | Demo 01 | Auto-discover test-app scrape target |
+| PodMonitor | Demo 11 | Scrape pods without a Service |
+| PrometheusRule | Demo 02 | Recording rules; Demo 07 alerting rules |
+| AlertmanagerConfig | Demo 07 | Per-namespace Slack routing |
+| Probe | Demo 19 | Blackbox Exporter HTTP/TLS checks |
+| ScrapeConfig | Demo 11 | Static external targets |
+| PrometheusAgent | Demo 22 | Agent mode + Mimir remote_write |
+| Prometheus | Demo 01 | Installed by chart; modified in Demo 13 HA |
+| Alertmanager | Demo 07 | Installed by chart; modified in Demo 13 HA |
+| ThanosRuler | Demo 22 | Federated alerting with Thanos |
+
 ### Prometheus CRD
 
 ```yaml
@@ -2491,7 +2689,17 @@ When to use PrometheusAgent vs Prometheus:
 ### ThanosRuler CRD
 
 For federated alerting across multiple Prometheus instances using Thanos.
-Out of scope for the demo series — documented for completeness.
+
+**What is Thanos?** Thanos is an open-source project (CNCF Incubating) that
+extends Prometheus with: long-term metrics storage in object stores (S3, GCS),
+global query across multiple Prometheus instances, deduplication of HA Prometheus
+pairs, and downsampling of historical data. The ThanosRuler CRD deploys a
+Thanos Ruler component that evaluates alerting and recording rules against
+Thanos Query rather than a single Prometheus instance — enabling rules that
+span multiple clusters.
+
+Thanos is covered in full in **Demo 22 — Grafana Mimir and Long-Term Storage**
+alongside Mimir as the alternative long-term storage pattern.
 
 ---
 
@@ -2695,6 +2903,91 @@ It runs with `hostPID: true` and `hostNetwork: true` at the pod level.
 # Verify RBAC — no ServiceAccount binding for Node Exporter
 kubectl get clusterrolebinding | grep node-exporter
 # (should return nothing)
+```
+
+### Common RBAC Errors and How to Diagnose Them
+
+```
+Error 1: ServiceMonitor exists but target never appears in Prometheus Targets
+
+  Symptom: ServiceMonitor applied, Operator logs show it was selected,
+           but no target appears. Prometheus Targets page shows nothing.
+
+  First check: is serviceMonitorSelectorNilUsesHelmValues: false?
+    helm get values kube-prometheus-stack -n monitoring | grep serviceMonitor
+    If true: Prometheus silently ignores ServiceMonitors without
+             label release: kube-prometheus-stack (see Demo 01 for full fix).
+
+  RBAC check: can the Prometheus ServiceAccount list endpoints in that namespace?
+    kubectl auth can-i list endpoints \
+      --namespace=<app-namespace> \
+      --as=system:serviceaccount:monitoring:kube-prometheus-stack-prometheus
+    If "no": the Prometheus ClusterRole is missing or the ClusterRoleBinding
+             is broken. Re-run: helm upgrade kube-prometheus-stack ... -f values.yaml
+
+Error 2: PrometheusRule applied but alert rules never load
+
+  Symptom: kubectl get prometheusrule shows the CRD exists, but
+           http://localhost:9090/rules shows no new rule groups.
+
+  Check 1: ruleSelectorNilUsesHelmValues setting (same as serviceMonitor case)
+  Check 2: Operator logs for reconcile errors:
+    kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus-operator --tail=50
+  Check 3: Admission webhook — did it reject the CRD?
+    kubectl describe prometheusrule <name> -n <namespace>
+    Look for: Conditions, Events — webhook rejection appears here
+
+Error 3: "cannot list resource in API group" in Operator logs
+
+  Full error example:
+    level=error msg="error syncing PrometheusRules"
+    err="could not list PrometheusRules in namespace payments:
+         prometheusrules.monitoring.coreos.com is forbidden:
+         User 'system:serviceaccount:monitoring:kube-prometheus-stack-operator'
+         cannot list resource 'prometheusrules' in API group
+         'monitoring.coreos.com' in the namespace 'payments'"
+
+  Root cause: The Operator ClusterRole only covers namespace 'monitoring'.
+              This should not happen with a standard install — if it does,
+              the CRDs were installed in a way that scoped the ClusterRole.
+  Fix: kubectl describe clusterrole kube-prometheus-stack-operator
+       Verify resources include monitoring.coreos.com and verbs include list.
+       If missing: re-install with helm upgrade to regenerate RBAC.
+
+Practical scenario — application team needs to create PrometheusRules in their namespace:
+
+  Requirement: payments team wants to manage their own alerting rules
+               without platform team involvement.
+
+  Grant with RBAC:
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: prometheusrule-manager
+      namespace: payments
+    rules:
+      - apiGroups: [monitoring.coreos.com]
+        resources: [prometheusrules, servicemonitors, podmonitors]
+        verbs: [get, list, watch, create, update, patch, delete]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: payments-team-monitoring
+      namespace: payments
+    subjects:
+      - kind: Group
+        name: payments-team        # matches your IdP group
+        apiGroup: rbac.authorization.k8s.io
+    roleRef:
+      kind: Role
+      name: prometheusrule-manager
+      apiGroup: rbac.authorization.k8s.io
+
+  Result: payments team can create/update PrometheusRules and ServiceMonitors
+          in their namespace. They cannot touch other namespaces or the
+          global Alertmanager config (that requires AlertmanagerConfig CRD
+          which is separate — grant the same way if needed).
 ```
 
 ---
@@ -3118,16 +3411,28 @@ Problem 1: Prometheus stores data locally (TSDB on disk)
 
 Problem 2: If you run two Prometheus instances, they scrape independently
   Both scrape the same targets.
-  Both have slightly different timestamps for the same metric.
-  Queries against either return different results.
+  Both store the same metrics — with slightly different timestamps.
   You cannot transparently load-balance between them.
+  Which metrics go to which instance: both instances scrape ALL the same
+  targets. There is no partitioning — duplication is intentional.
+  Deduplication happens at query time via Thanos Query or Mimir query-frontend.
 
 Problem 3: Alerting with two Prometheus instances
   Both instances fire the same alert.
   Alertmanager receives duplicate alerts.
-  Two notifications for every incident.
+  Alertmanager's deduplication (by label fingerprint) suppresses the duplicate.
+  With the Alertmanager gossip mesh (HA mode), exactly one notification is sent.
 
-Problem 4: Long-term storage
+Problem 4: Grafana connecting to multiple Prometheus instances
+  Single instance: Grafana data source points to one Prometheus URL.
+  HA pair: Grafana can have two data sources (one per instance), but queries
+           would return different results depending on which is queried.
+  Correct approach: add a Thanos Query or Mimir query-frontend as the single
+           Grafana data source — it fans out to both instances, deduplicates
+           results, and returns a unified response. One URL in Grafana,
+           transparent HA underneath.
+
+Problem 5: Long-term storage
   Local TSDB is limited to one node.
   Retention beyond 30–90 days requires enormous local disk.
   Historical queries get slow as data ages.
@@ -3619,6 +3924,7 @@ A PVC (PersistentVolumeClaim) provides storage that exists independently of the 
 | Alertmanager config reference | https://prometheus.io/docs/alerting/latest/configuration/ |
 | Grafana documentation | https://grafana.com/docs/grafana/latest/ |
 | Grafana provisioning | https://grafana.com/docs/grafana/latest/administration/provisioning/ |
+| Grafana dashboard linter | https://github.com/grafana/dashboard-linter |
 | Grafana security advisories | https://github.com/grafana/grafana/security/advisories |
 | Node Exporter collectors | https://github.com/prometheus/node_exporter#collectors |
 | kube-state-metrics metrics | https://github.com/kubernetes/kube-state-metrics/blob/main/docs/metrics |

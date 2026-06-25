@@ -1,4 +1,4 @@
-# src/test-app/servicemonitor.yaml
+# src/test-app/03-servicemonitor.yaml
 #
 # ServiceMonitor is a CRD installed by the Prometheus Operator.
 # When you apply this manifest, the Operator will:
@@ -20,14 +20,14 @@ spec:
   # Select the Service to monitor by matching its labels
   selector:
     matchLabels:
-      app: test-app # matches the Service in service.yaml
+      app: test-app         # matches the Service in 02-service.yaml
 
   # Where to find /metrics on the matched Service
   endpoints:
-    - port: http-metrics # named port from service.yaml (not port number)
-      path: /metrics # the path Prometheus will GET
-      interval: 15s # how often to scrape
-      scrapeTimeout: 10s # timeout per scrape — must be less than interval
+    - port: http-metrics    # named port from 02-service.yaml (not port number)
+      path: /metrics        # the path Prometheus will GET
+      interval: 15s         # how often to scrape
+      scrapeTimeout: 10s    # timeout per scrape — must be less than interval
 
   # Which namespaces to look in for matching Services
   namespaceSelector:

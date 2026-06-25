@@ -1,0 +1,19 @@
+# src/test-app/02-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-app
+  namespace: default
+  labels:
+    app: test-app     # ServiceMonitor matches on this label
+spec:
+  type: ClusterIP
+  selector:
+    app: test-app
+  ports:
+    - name: http           # named port — referenced by name in ServiceMonitor
+      port: 9898
+      targetPort: 9898
+    - name: http-metrics   # named port — this is what the ServiceMonitor scrapes
+      port: 9797
+      targetPort: 9797

@@ -38,129 +38,187 @@ before the next release goes out tonight.
 
 ---
 
-## Google's Four Golden Signals — The Framework Behind This Demo
+## Prerequisites
 
-Google's SRE Book defines four signals that, together, give you sufficient
-visibility into any service. Every metric in this demo and every demo that follows
-maps to one of these four. This is not theory — it is the framework Google uses
-in production.
+> **Foundation Reading — Demo 00:**
+> Before proceeding with this hands-on lab, read the
+> [Kube-Prometheus-Stack-Guide (Demo 00)](./Kube-Prometheus-Stack-Guide.md).
+> It covers: the Prometheus and Grafana product families, why kube-prometheus-stack
+> exists, security posture, component internals, CRDs, RBAC, HA patterns, and CLI tools.
+> This demo assumes that background knowledge. Topics covered in Demo 00 are not
+> repeated here — cross-references are provided where relevant.
 
+**Versions used in this demo:**
+
+| Component | Version | Notes |
+|---|---|---|
+| kube-prometheus-stack Helm chart | **84.5.0** | `prometheus-community/kube-prometheus-stack` |
+| Prometheus | **3.4.1** | bundled — `prom/prometheus:v3.4.1` |
+| Prometheus Operator | **0.90.1** | bundled |
+| Alertmanager | **0.28.1** | bundled |
+| Grafana | **12.3.0** | bundled |
+| Node Exporter | **1.11.1** | bundled |
+| kube-state-metrics | **2.18.0** | bundled via kube-state-metrics chart 7.3.0 |
+| podinfo (test app) | **6.7.1** | `ghcr.io/stefanprodan/podinfo:6.7.1` |
+| Minikube | **1.35.0+** | [minikube.sigs.k8s.io](https://minikube.sigs.k8s.io) |
+| Helm | **3.17.0+** | [helm.sh](https://helm.sh) |
+| kubectl | **1.32+** | [kubernetes.io](https://kubernetes.io) |
+
+> **Version policy:** Every demo pins explicit chart and image versions.
+> Using `latest` tags breaks reproducibility. Always check
+> [ArtifactHub](https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack)
+> for the current stable release when starting a new lab environment.
+
+**Local tools required:**
+
+| Tool | Minimum version | Verify command |
+|---|---|---|
+| Minikube | **1.37.0** | `minikube version` |
+| kubectl | **1.34.1** | `kubectl version --client` |
+| Helm | **3.19.0** | `helm version --short` |
+| curl | any | `curl --version` |
+
+**Knowledge expected:**
+- Basic Kubernetes: pods, deployments, services, namespaces, kubectl
+- Basic Helm: `helm repo add`, `helm install`, values files, `helm upgrade`
+- YAML syntax familiarity
+
+**Verify all tools before starting:**
+
+```bash
+minikube version && kubectl version --client && helm version --short
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                  Google's Four Golden Signals                           │
-├───────────────┬─────────────────────────────────────────────────────────┤
-│  LATENCY      │ How long it takes to serve a request                    │
-│               │ Prometheus: histogram_quantile(0.99, rate(bucket[5m]))  │
-│               │ Key: distinguish successful vs failed request latency   │
-│               │ A slow error is different from a fast error             │
-├───────────────┼─────────────────────────────────────────────────────────┤
-│  TRAFFIC      │ How much demand is on your system right now             │
-│               │ Prometheus: sum(rate(http_requests_total[5m]))          │
-│               │ Unit: requests/second, queries/second, writes/second    │
-├───────────────┼─────────────────────────────────────────────────────────┤
-│  ERRORS       │ Rate of requests that fail                              │
-│               │ Prometheus: rate(requests_total{status=~"5.."}[5m])    │
-│               │ Covers explicit (500 codes) and implicit (wrong content)│
-├───────────────┼─────────────────────────────────────────────────────────┤
-│  SATURATION   │ How full or overloaded the service is                   │
-│               │ Prometheus: memory_bytes / memory_limit_bytes           │
-│               │ Measure utilisation against capacity, not raw values    │
-└───────────────┴─────────────────────────────────────────────────────────┘
-```
-
-> **Why this framework matters:** Teams that alert on symptoms (the four golden
-> signals — things users actually experience) catch real problems. Teams that alert
-> on causes alone get alert fatigue and miss the real issues. Monitor what users
-> feel first, then drill into causes.
 
 ---
 
-## Symptoms vs Causes in Observability
+## Demo Objectives
 
-This distinction is one of the most important concepts in the Google SRE model
-and one of the most frequently misunderstood by engineers new to monitoring.
+By the end of this demo you will be able to:
 
-### Symptom — What You Observe
+1. ✅ Explain why Prometheus uses a pull model and when to use Pushgateway instead
+2. ✅ Describe the TSDB write path: scrape → WAL → head block → disk → compaction
+3. ✅ Identify all four metric types from a raw `/metrics` endpoint
+4. ✅ Explain label cardinality and calculate its RAM cost
+5. ✅ Describe what the Prometheus Operator does and how it replaces manual config
+6. ✅ Explain the difference between `scrape_interval` and `evaluation_interval`
+7. ✅ Deploy `kube-prometheus-stack` v84.5.0 with a custom values file
+8. ✅ Navigate Targets, Graph, Service Discovery, and TSDB Status pages
+9. ✅ Deploy a test application and make it auto-discoverable via ServiceMonitor
+10. ✅ Write five PromQL queries covering the four golden signals
+11. ✅ Validate the running configuration with `promtool`
+12. ✅ Simulate CPU load and watch metrics respond in real time
 
-A symptom is an externally visible signal that something is wrong. It surfaces
-through your monitoring stack — metrics, logs, traces showing something has changed.
+---
 
-```
-Examples of symptoms (alert on these):
-  API p99 latency > 2 seconds
-  Error rate > 1% of requests
-  Pod restart count increasing
-  Queue depth growing continuously
-  CPU saturation > 90% for > 5 minutes
-```
-
-Key property: symptoms tell you **that** something is wrong, not **why**.
-
-### Cause — Why It Happened
-
-A cause is the underlying reason that produced the symptom.
-You discover causes through investigation — logs, traces, profiling, code review.
+## Directory Structure
 
 ```
-Examples of causes (investigate to find these):
-  Memory leak         → pod OOMKilled           → pod restarts (symptom)
-  Slow database query → connection pool exhaust  → API latency spike (symptom)
-  Bad deployment      → nil pointer exception    → 500 error rate (symptom)
-  Missing index       → full table scan on DB    → high CPU + latency (symptom)
+01-prometheus-fundamentals/
+├── README.md                               # this file
+├── 01-prometheus-fundamentals-anki.csv     # Anki flash cards 
+├── 01-prometheus-fundamentals-quiz.md      # Quiz 
+└── src/
+    ├── values.yaml                         # kube-prometheus-stack Helm values
+    └── test-app/
+        ├── 01-deployment.yaml                 # podinfo (3 replicas)
+        ├── 02-service.yaml                    # ClusterIP Service
+        └── 03-servicemonitor.yaml             # ServiceMonitor CRD
 ```
+---
 
-### Real-World Scenarios — Symptom → Cause Chain
+## Recall Check — Demo 00
 
-```
-Scenario 1: E-commerce checkout is slow
-  Symptom : p99 checkout latency > 8 seconds  (alert fires)
-  Signal  : Prometheus histogram_quantile shows spike
-  Causes  : Payment service dependency timeout
-            DB connection pool exhausted under Black Friday load
-            Network partition between services
+Answer from memory before reading further. These questions draw on the
+[Kube-Prometheus-Stack-Guide (Demo 00)](./Kube-Prometheus-Stack-Guide.md).
 
-Scenario 2: Kubernetes pods restarting
-  Symptom : kube_pod_container_status_restarts_total increasing
-  Signal  : Prometheus kube-state-metrics shows restart counter climbing
-  Causes  : OOMKilled — memory limit too low for actual usage
-            Application crash loop — bug in new deployment
-            Liveness probe misconfigured — killing healthy pods
+1. The Prometheus Operator watches the Kubernetes API for CRD changes. When a developer creates a new ServiceMonitor in the `orders` namespace, walk through every step the Operator takes before Prometheus begins scraping the new target.
 
-Scenario 3: Order API errors spiking
-  Symptom : HTTP 500 rate > 5% (SLO breach imminent)
-  Signal  : Prometheus http_requests_total{status=~"5.."} rising
-  Causes  : New buggy deployment 30 minutes ago
-            Downstream inventory service returning errors
-            Database schema migration breaking queries
-```
+2. You check the Grafana data source configuration and see it is pointed at `prometheus-operated:9090`. Grafana dashboards show no data despite Prometheus scraping targets successfully. What is wrong and what is the correct value?
 
-### The Three Pillars Bridge the Gap
+3. A colleague says "we should set `serviceMonitorSelectorNilUsesHelmValues: true` to lock down which ServiceMonitors Prometheus discovers — it's more secure." What does this setting actually do, what breaks in a multi-team environment when it is `true`, and what is the correct approach for controlling ServiceMonitor access?
 
-```
-Metrics  → Detect symptoms     "p99 latency is 8 seconds — something is wrong"
-Logs     → Provide context     "DB connection: timeout after 5000ms"
-Traces   → Show request flow   "Request spent 7.9s waiting for DB connection"
+<details>
+<summary>Answers</summary>
 
-Together → Infer the cause     "DB connection pool is exhausted"
-```
+1. The Operator detects the new ServiceMonitor via its cluster-wide watch on the `monitoring.coreos.com` API group. It queries the Kubernetes Endpoints API (not the Service API) for pods matching the ServiceMonitor's `spec.selector.matchLabels`. It builds a `scrape_config` block with the actual pod IPs and ports. It writes the updated `prometheus.yaml` to a ConfigMap. The config-reloader sidecar detects the ConfigMap change and POSTs to Prometheus's `/-/reload` endpoint. Prometheus reloads config without restarting and begins scraping the new pods — the entire flow completes within 30 seconds, with no manual intervention.
 
-### Common Mistakes
+2. `prometheus-operated:9090` is the headless service created by the StatefulSet — it is used for StatefulSet peer DNS resolution between replicas, not for external connections. Grafana cannot reliably connect through a headless service. The correct value is `http://kube-prometheus-stack-prometheus:9090`, which is the named ClusterIP service that routes to the Prometheus pod.
+
+3. When `true`, Prometheus only discovers ServiceMonitors that carry the label `release: kube-prometheus-stack` (the Helm release name). Any ServiceMonitor created by an application team without that exact label is silently ignored — the team's service never gets scraped and no error is shown. In a multi-team environment this forces every team to add a platform-specific label to their ServiceMonitors, breaking the self-service model. The correct approach is to set this to `false` (discover all ServiceMonitors cluster-wide) and use Kubernetes RBAC on the `servicemonitors` resource to control which teams can create them in which namespaces.
+
+</details>
+
+---
+
+## Concepts
+
+### Architecture
 
 ```
-WRONG approach: alert on causes only
-  "CPU > 80%"         → alert fires constantly on healthy bursts
-  "Memory > 70%"      → fires on expected normal usage
-  Result: alert fatigue, on-call team stops responding
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              Minikube Cluster                                │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │                       monitoring namespace                          │     │
+│  │                                                                     │     │
+│  │  ┌─────────────────────────────────┐  ┌─────────────────────────┐   │     │
+│  │  │    Prometheus Operator          │  │    Alertmanager         │   │     │
+│  │  │    (Deployment, 1 replica)      │  │    (StatefulSet)        │   │     │
+│  │  │                                 │  │    Port 9093            │   │     │
+│  │  │    Watches:                     │  │    Deduplicates +       │   │     │
+│  │  │      ServiceMonitor CRDs        │  │    routes fired alerts  │   │     │
+│  │  │      PodMonitor CRDs            │  │    to Slack / email /   │   │     │
+│  │  │      PrometheusRule CRDs        │  │    PagerDuty            │   │     │
+│  │  │                                 │  └─────────────────────────┘   │     │ 
+│  │  │    Generates: prometheus.yaml   │                                │     │
+│  │  │    Reloads:   /-/reload API     │  ┌──────────────────────────┐  │     │
+│  │  └─────────────────────────────────┘  │    Grafana               │  │     │
+│  │                                       │    (Deployment)          │  │     │
+│  │  ┌──────────────────────────────────────────────────────────┐    │  │     │
+│  │  │             Prometheus Server                            │    │  │     │
+│  │  │             (StatefulSet, 1 replica, Port 9090)          │    │  │     │
+│  │  │             10Gi PVC for TSDB — 10d retention            │    │  │     │
+│  │  │                                                          │    │  │     │
+│  │  │  ┌─────────────┐  ┌──────────────┐   ┌────────────────┐  │    │  │     │
+│  │  │  │  Scraper    │  │    TSDB      │   │ Rule Evaluator │  │    │  │     │
+│  │  │  │ Pull /metrics│ │ WAL → Head   │   │ Every 15s      │  │    │  │     │
+│  │  │  │ every 15s   │  │ → Disk Blks  │   │ Recording rules│  │    │  │     │
+│  │  │  └──────┬──────┘  └──────────────┘   │ Alerting rules │  │    │  │     │
+│  │  └─────────┼────────────────────────────┴────────────────┴──┘    │  │     │
+│  │            │                          └──────────────────────────┘  │     │
+│  │   ① HTTP GET /metrics (pull model — Prometheus reaches out)         │     │
+│  │            │                                                        │     │
+│  │  ┌─────────▼──────────────────────────────────────────────────┐     │     │
+│  │  │                   Scrape Targets                           │     │     │
+│  │  │  ┌─────────────┐  ┌──────────────────┐  ┌─────────────┐    │     │     │
+│  │  │  │Node Exporter│  │kube-state-metrics│  │  Grafana    │    │     │     │
+│  │  │  │(DaemonSet)  │  │(Deployment)      │  │(self-mon)   │    │     │     │
+│  │  │  │Port 9100    │  │Port 8080         │  │Port 3000    │    │     │     │
+│  │  │  │Host: CPU    │  │K8s API state:    │  │             │    │     │     │
+│  │  │  │mem, disk    │  │pods, deploys,    │  │             │    │     │     │
+│  │  │  │network, fs  │  │PVCs, resource    │  │             │    │     │     │
+│  │  │  │             │  │limits, quotas    │  │             │    │     │     │
+│  │  │  └─────────────┘  └──────────────────┘  └─────────────┘    │     │     │
+│  │  └────────────────────────────────────────────────────────────┘     │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │                       default namespace                             │     │ 
+│  │  ┌──────────────────────────────────────────────────────────────┐   │     │
+│  │  │  podinfo test app (Deployment, 3 replicas)                   │   │     │
+│  │  │  Port 9898: HTTP API  |  Port 9797: /metrics                 │   │     │
+│  │  │  ServiceMonitor CRD → Operator → scrape config auto-generated│   │     │
+│  │  └──────────────────────────────────────────────────────────────┘   │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+└──────────────────────────────────────────────────────────────────────────────┘
 
-RIGHT approach: alert on symptoms, investigate causes
-  "p99 latency > 2s"  → users are feeling slowness — investigate
-  "Error rate > 1%"   → users are seeing failures — investigate
-  Result: every alert means a real user impact
+Signal flows:
+  ① Prometheus ──(HTTP GET /metrics every 15s)──► each target
+  ② Samples ──► WAL ──► head block ──► disk blocks (compaction)
+  ③ PromQL query ──► Prometheus API ──► Grafana / UI
+  ④ Alert rule fires ──► Alertmanager ──► Slack / email
+  ⑤ ServiceMonitor created ──► Operator ──► prometheus.yaml regenerated ──► reload
 ```
-
-> **The mental model:** Symptom = smoke (your monitoring shows it).
-> Cause = fire (your engineering effort finds and fixes it).
-> Prometheus shows you the smoke clearly. Finding the fire is the SRE's job.
 
 ---
 
@@ -177,13 +235,13 @@ full LGTM+ stack you are building across all 25 demos.
 ├───────────────────────────┼──────────────────────────────────────────────┤
 │  Prometheus (this demo)   │  Metrics: scrapes /metrics every 15 seconds  │
 │                           │  Stores time-series in local TSDB (15d)      │
-│                           │  Evaluates alerting and recording rules       │
+│                           │  Evaluates alerting and recording rules      │
 ├───────────────────────────┼──────────────────────────────────────────────┤
 │  Grafana (Demo 04)        │  Dashboards: connects to Prometheus via API  │
 │                           │  Renders PromQL queries as panels and graphs │
 ├───────────────────────────┼──────────────────────────────────────────────┤
 │  Loki + Alloy (Demo 05–06)│  Logs: Alloy collects pod logs, sends to Loki│
-│                           │  LogQL for searching and filtering log streams│
+│                           │ LogQL for searching and filtering log streams│
 ├───────────────────────────┼──────────────────────────────────────────────┤
 │  Alertmanager (Demo 07–08)│  Routing: deduplicates and routes alerts     │
 │                           │  Slack, PagerDuty, email receivers           │
@@ -198,487 +256,6 @@ full LGTM+ stack you are building across all 25 demos.
 │                           │  The 4th observability pillar                │
 └───────────────────────────┴──────────────────────────────────────────────┘
 ```
-
----
-
-## Why Prometheus Uses a Pull Model — And When to Use Push Instead
-
-The single most important architectural decision in Prometheus: it reaches
-out to targets rather than targets sending data to Prometheus. This is called
-the **pull model**.
-
-### How Pull vs Push Work
-
-```
-Push model (traditional — StatsD, Graphite, many agents):
-
-  App instance 1 ──────────────────────────────────────────► Monitoring server
-  App instance 2 ──────────────────────────────────────────► Monitoring server
-  App instance 3 ──────────────────────────────────────────► Monitoring server
-
-  App decides: when to send, how often, what format
-  If app is broken: it may still push — masking the failure
-  Network failure: ambiguous — is the app down, or just not pushing?
-  Thundering herd: 1000 pods restart simultaneously and flood the server
-
-
-Pull model (Prometheus):
-
-  Prometheus ─── HTTP GET /metrics every 15s ──► App instance 1
-  Prometheus ─── HTTP GET /metrics every 15s ──► App instance 2
-  Prometheus ─── HTTP GET /metrics every 15s ──► App instance 3
-
-  Prometheus controls: when to scrape, how often, which targets exist
-  If scrape fails: Prometheus knows immediately — sets up{instance="..."} = 0
-  Network failure: explicit and visible — scrape fails with connection error
-  Thundering herd: Prometheus paces the scrapes — targets cannot flood it
-```
-
-### Why Pull Wins for Kubernetes Monitoring
-
-```
-1. Prometheus controls the scrape rate
-   One place to tune: scrape_interval in prometheus.yaml or values.yaml
-   No risk of apps flooding the system during startup bursts
-
-2. Failure is explicit and unambiguous
-   Scrape failure → up{instance="..."} = 0  (you can alert on this)
-   Push: absence of data is ambiguous — down or just no traffic?
-
-3. Centralised instance discovery
-   Prometheus uses Kubernetes API for service discovery via Operator
-   New pod starts → Prometheus discovers it via ServiceMonitor in < 30s
-   Pod terminates → scrape target disappears cleanly
-
-4. Debug any target on demand
-   Point Prometheus at any pod IP without changing the app
-   Invaluable during incidents for investigating specific instances
-
-5. Configuration lives in one place
-   ServiceMonitor CRDs define what gets scraped — not scattered configs
-```
-
-### When Pull Is the Wrong Choice — Use Push Instead
-
-```
-Problem 1: Short-lived batch jobs
-  A Kubernetes Job runs for 45 seconds then exits.
-  Prometheus scrapes every 15 seconds — the job may complete between scrapes.
-  Metrics are never captured.
-
-  Solution: Pushgateway
-  Job pushes metrics to Pushgateway when it completes.
-  Prometheus scrapes Pushgateway (long-lived) on its normal schedule.
-
-  ⚠️  Pushgateway warning: no TTL by default — stale metrics persist after
-      job deletion. Always label with job name and delete metrics explicitly
-      on job completion via the Pushgateway API.
-
-Problem 2: AWS Lambda / Fargate / ephemeral workloads
-  Lambda runs for 50ms, has no stable network address, no fixed IP.
-  Prometheus cannot reach it — no inbound connectivity, no fixed endpoint.
-
-  Solution: Push to CloudWatch (covered in AWS observability project),
-  or push to a Pushgateway the Lambda knows about.
-  This is exactly why CloudWatch uses push — Lambda has no inbound address.
-
-Problem 3: Strict network isolation (private subnets, no inbound access)
-  App is in a private VPC subnet. Prometheus cannot reach port 8080.
-
-  Solution: Deploy Prometheus in the same subnet, or use Grafana Alloy
-  as a push agent that remote_writes to a Prometheus remote endpoint.
-```
-
-> **The rule:** Pull works for stable, long-running services with known network
-> addresses — almost every Kubernetes workload. Use push only for ephemeral
-> workloads with no stable address.
-
----
-
-## The TSDB — How Prometheus Stores Data on Disk
-
-TSDB (Time Series Database) is Prometheus's embedded storage engine.
-Understanding it helps you reason about disk usage, query performance,
-retention policies, and what happens when Prometheus restarts.
-
-### What a Time Series Is
-
-Every unique combination of metric name + labels is a separate **time series**:
-
-```
-http_requests_total{job="api", instance="10.0.0.1:8080", method="GET",  status="200"}
-http_requests_total{job="api", instance="10.0.0.1:8080", method="GET",  status="500"}
-http_requests_total{job="api", instance="10.0.0.1:8080", method="POST", status="200"}
-http_requests_total{job="api", instance="10.0.0.2:8080", method="GET",  status="200"}
-         ↑               ↑                                ↑               ↑
-      metric name     labels                      4 completely separate time series
-```
-
-Each time series is a sequence of `(timestamp, float64)` pairs:
-
-```
-t=1715000000, value=14823.0
-t=1715000015, value=14829.0   ← +6 requests in 15 seconds
-t=1715000030, value=14841.0   ← +12 requests in 15 seconds (traffic increased)
-t=1715000045, value=14841.0   ← same value (no new requests in this window)
-```
-
-### TSDB On-Disk Layout
-
-```
-/prometheus/                              ← storage root (--storage.tsdb.path)
-│
-├── wal/                                  ← Write-Ahead Log
-│   ├── 00000001                          ← WAL segment: all incoming samples
-│   └── 00000002                          ← new segment created when prev fills
-│                                         ← replayed on restart after crash
-│
-├── chunks_head/                          ← in-memory head chunk (mmap'd to disk)
-│   └── 000001                            ← most recent ~2 hours of data
-│
-├── 01HPB5X2YJVZWCA4QXZG6T3ZSF/          ← compacted block (ULID — time-ordered)
-│   ├── chunks/                           ← compressed metric samples
-│   │   └── 000001                        ← raw float64, delta-encoded
-│   ├── index                             ← inverted index: label → series → chunk
-│   ├── meta.json                         ← min/max time, stats, compaction history
-│   └── tombstones                        ← deleted series markers (soft delete)
-│
-└── 01HPC7MNZAKQTB2JVZW3Y8P4RX/          ← another compacted block
-    └── ...
-```
-
-### The Write Path — What Happens Every 15 Seconds
-
-```
-Step 1: Scrape
-  Prometheus sends HTTP GET /metrics to the target
-  Target responds with OpenMetrics text format
-  Prometheus parses response → raw sample list in memory
-
-Step 2: WAL append
-  Every sample written to WAL immediately (sequential write — fast)
-  WAL provides crash safety: if Prometheus dies, WAL is replayed on restart
-  This is the same pattern as database transaction logs
-
-Step 3: Head block (in-memory)
-  Samples stored in compressed in-memory head block
-  Head block covers approximately the most recent 2 hours
-  Queries against recent data read from head block (very fast — no disk I/O)
-
-Step 4: Block creation (every 2 hours)
-  Head block flushed to disk as a new immutable 2-hour block
-  Block contains: chunks (compressed samples) + index + metadata
-
-Step 5: Compaction (background process)
-  Small blocks merged into larger blocks progressively:
-  2h → 6h → 24h → 48h → up to maximum block duration (31d default)
-  Larger blocks = fewer files = faster range queries
-
-Step 6: Retention enforcement
-  Blocks older than --storage.tsdb.retention.time (default: 15d) are deleted
-  Or when --storage.tsdb.retention.size is exceeded
-```
-
-### RAM Usage — What Drives It
-
-```
-Prometheus RAM is dominated by the head block (in-memory recent data):
-
-Approximate RAM per active series: ~2–3 KB in the head block
-
-Example calculation for a medium cluster:
-  Node Exporter:       10 nodes × 300 metrics  =  3,000 series ×  3KB =   9 MB
-  kube-state-metrics:  1 cluster × 5,000 metrics = 5,000 series ×  3KB =  15 MB
-  App metrics:         5 services × 2,000 metrics = 10,000 series × 3KB =  30 MB
-  ──────────────────────────────────────────────────────────────────────────────
-  Total:               18,000 series                                  ~  54 MB
-
-Cardinality explosion with user_id label (100,000 active users):
-  5 services × 2,000 metrics × 100,000 users = 1,000,000,000 series
-  1,000,000,000 × 3KB = 3 TB RAM  ← Prometheus OOMKills
-  This is a real scenario that has happened to production companies
-
-Check current series count:
-  Prometheus UI → Status → Runtime & Build Information → Head Series
-  OR query: prometheus_tsdb_head_series
-```
-
----
-
-## The Four Metric Types — With Real /metrics Examples
-
-Prometheus has exactly four metric types. Choosing the right one and using
-the right PromQL functions with each is a core production skill.
-
-### Counter
-
-A counter **only ever increases**. It resets to zero when the process restarts.
-`rate()` handles counter resets automatically.
-
-**When to use:** requests, errors, bytes transferred, tasks completed, retries.
-**Never use for:** values that go down (memory, queue depth, active connections).
-
-```
-# HELP http_requests_total Total number of HTTP requests processed
-# TYPE http_requests_total counter
-http_requests_total{method="GET",  path="/api/orders", status="200"} 482931
-http_requests_total{method="GET",  path="/api/orders", status="500"} 142
-http_requests_total{method="POST", path="/api/orders", status="201"} 91283
-http_requests_total{method="POST", path="/api/orders", status="400"} 837
-```
-
-```
-Correct PromQL for counters:
-
-  WRONG: http_requests_total
-    Returns raw cumulative total (482931) — useless for alerting
-    You cannot set a meaningful threshold on a monotonically increasing number
-
-  CORRECT: rate(http_requests_total[5m])
-    Per-second request rate over the last 5 minutes
-    Handles counter resets (pod restarts) automatically
-    Meaningful: "14.2 requests per second"
-
-  CORRECT: increase(http_requests_total[1h])
-    Total new requests in the last 1 hour — useful for trend reporting
-    "3,420 new requests in the past hour"
-
-  Rule: never use a raw counter value in an alert or dashboard panel.
-        Always wrap with rate() or increase().
-```
-
-### Gauge
-
-A gauge **goes up and down**. It represents a snapshot of a current value.
-
-**When to use:** memory usage, CPU temperature, queue depth, active connections,
-goroutine count, pod replica count.
-**Never use for:** monotonically increasing values.
-
-```
-# HELP node_memory_MemAvailable_bytes Memory available for new allocations
-# TYPE node_memory_MemAvailable_bytes gauge
-node_memory_MemAvailable_bytes 4294967296
-
-# HELP go_goroutines Number of goroutines that currently exist
-# TYPE go_goroutines gauge
-go_goroutines 42
-
-# HELP kube_deployment_status_replicas_available Deployment available replicas
-# TYPE kube_deployment_status_replicas_available gauge
-kube_deployment_status_replicas_available{namespace="default",deployment="api"} 3
-```
-
-```
-Correct PromQL for gauges:
-
-  CORRECT: node_memory_MemAvailable_bytes / 1024 / 1024 / 1024
-    Current available memory in GB — query directly, no function needed
-
-  CORRECT: predict_linear(node_filesystem_avail_bytes[6h], 24 * 3600)
-    Project current disk trend 24 hours forward
-    "At current rate, disk will be full in X hours" — proactive alerting
-
-  CORRECT: delta(go_goroutines[10m])
-    How much did goroutine count change in the last 10 minutes?
-    Positive delta that keeps growing = possible goroutine leak
-
-  WRONG: rate(node_memory_MemAvailable_bytes[5m])
-    rate() assumes monotonic increase (counter semantics)
-    On a gauge it produces nonsense when the value decreases
-```
-
-### Histogram
-
-A histogram **samples observations into configurable buckets** and also tracks
-`_sum` (total of all observed values) and `_count` (number of observations).
-
-**When to use:** request duration, response size, database query time.
-**Critical:** bucket boundaries must be defined at instrumentation time.
-
-```
-# HELP http_request_duration_seconds Request latency histogram
-# TYPE http_request_duration_seconds histogram
-http_request_duration_seconds_bucket{le="0.005"} 724
-http_request_duration_seconds_bucket{le="0.01"}  1205
-http_request_duration_seconds_bucket{le="0.025"} 2891
-http_request_duration_seconds_bucket{le="0.05"}  4201
-http_request_duration_seconds_bucket{le="0.1"}   4803
-http_request_duration_seconds_bucket{le="0.25"}  4961
-http_request_duration_seconds_bucket{le="0.5"}   4989
-http_request_duration_seconds_bucket{le="1"}     4997
-http_request_duration_seconds_bucket{le="+Inf"}  5000
-http_request_duration_seconds_sum   184.231
-http_request_duration_seconds_count 5000
-```
-
-```
-Reading this histogram:
-  724 of 5000 requests completed in ≤ 5ms      (14.5% very fast)
-  4803 of 5000 requests completed in ≤ 100ms   (96% under SLO if SLO = 100ms)
-  5000 - 4997 = 3 requests took more than 1 second
-  Average latency = 184.231 / 5000 = 36.8ms
-
-Calculating p99 latency (the most important latency metric):
-  histogram_quantile(
-    0.99,
-    rate(http_request_duration_seconds_bucket[5m])
-  )
-  → histogram_quantile interpolates between bucket boundaries
-  → Design buckets to bracket your SLO (e.g. le="0.1" if SLO is 100ms)
-
-Why three series (_bucket, _sum, _count)?
-  _bucket: cumulative — "how many requests fell below this threshold?"
-  _sum:    total observed duration — divide by _count for average latency
-  _count:  number of observations — same semantics as a counter
-
-Prometheus 3.x: Native Histograms
-  New in Prometheus 3.0: dynamic buckets, more accurate, lower cardinality.
-  Enabled in this demo via enableFeatures: [native-histograms] in values.yaml.
-  Client libraries support both formats simultaneously.
-  Classic format above still fully supported — nothing breaks.
-
-Histogram vs Summary (always choose histogram unless you have a specific reason):
-  Histogram: buckets at code time, quantiles at query time — aggregatable ✅
-  Summary:   quantiles at scrape time, per-instance — not aggregatable ❌
-  Rule: use histogram unless you specifically need single-instance quantiles
-        and cannot tolerate any query-time approximation.
-```
-
-### Summary
-
-A summary **calculates quantiles client-side** (inside the application).
-It exports pre-calculated quantile values plus `_sum` and `_count`.
-
-**When to use:** only when you need accurate single-instance quantiles.
-Almost always prefer histogram.
-
-```
-# HELP go_gc_duration_seconds Pause duration of garbage collection cycles
-# TYPE go_gc_duration_seconds summary
-go_gc_duration_seconds{quantile="0"}    3.9012e-05
-go_gc_duration_seconds{quantile="0.25"} 5.1e-05
-go_gc_duration_seconds{quantile="0.5"}  6.8e-05
-go_gc_duration_seconds{quantile="0.75"} 9.3e-05
-go_gc_duration_seconds{quantile="1"}    0.000293
-go_gc_duration_seconds_sum   0.4829
-go_gc_duration_seconds_count 4821
-```
-
-```
-Summary limitations that make histogram almost always better:
-
-  You cannot aggregate summaries across instances:
-    Averaging p99 across 10 pods is mathematically incorrect
-    sum(p99 per pod) / 10 is NOT the p99 across all pods
-
-  Quantile levels are fixed at deploy time:
-    If you instrument with quantile="0.99" but later need p99.9,
-    you must redeploy the application and wait for new data
-
-  When summary is correct:
-    Single-instance application where exact quantiles matter
-    Cannot tolerate any histogram interpolation inaccuracy
-    Specific documented technical requirement for per-instance precision
-```
-
----
-
-## Labels and Cardinality — Power and Danger
-
-Labels are key-value pairs attached to every metric. They make Prometheus
-enormously expressive. They are also the most common source of Prometheus
-OOMKills in production.
-
-### What Labels Enable
-
-```
-Without labels:
-  http_requests_total = 9283
-  (one number — which service? which endpoint? which status code? unknown)
-
-With labels:
-  http_requests_total{service="orders", method="POST", status="201"} = 8291
-  http_requests_total{service="orders", method="POST", status="500"} = 992
-  http_requests_total{service="orders", method="GET",  status="200"} = 44821
-
-  Now you can answer:
-    What is the error rate for the orders POST endpoint?
-    Which service handles the most traffic?
-    Which HTTP methods are returning errors?
-```
-
-### Cardinality — The Most Important Production Concern
-
-**Cardinality** = total number of unique time series in the TSDB head block.
-Each unique combination of `{metric_name, all_label_values}` = 1 series.
-
-```
-Safe cardinality example:
-  http_requests_total with bounded labels:
-    service: orders, payment, catalogue    (3 values)
-    method:  GET, POST, PUT, DELETE        (4 values)
-    status:  200, 201, 400, 404, 500, 503  (6 values)
-
-  Total: 3 × 4 × 6 = 72 series            ← perfectly fine ✅
-
-
-Cardinality explosion (this destroys Prometheus in production):
-  Add user_id label (100,000 active users)
-  3 × 4 × 6 × 100,000 = 7,200,000 series
-
-  At ~3 KB RAM per series in the head block:
-  7,200,000 × 3 KB = ~21 GB RAM consumed by ONE metric
-  Prometheus OOMKills → monitoring disappears → during an incident
-  This exact scenario has happened at real companies.
-
-
-Production cardinality targets by cluster size:
-  Small  (< 5 nodes):    50,000 – 200,000 series
-  Medium (5–50 nodes):   200,000 – 1,000,000 series
-  Large  (50+ nodes):    1M+ series (needs tuning and Mimir — Demo 22)
-```
-
-### Label Cardinality Rules
-
-```
-✅  GOOD labels — bounded, enumerable, stable:
-  service, pod, namespace, method, status_code, region, environment
-  HTTP method: GET, POST, PUT, DELETE — always 4–5 values ✅
-  HTTP status: 200, 404, 500 — always 10–20 common values ✅
-
-❌  BAD labels — unbounded, growing, unique per request:
-  user_id      → grows with every new user (millions)
-  request_id   → unique per request (billions/day)
-  session_id   → same problem as request_id
-  email        → unique per user — same as user_id
-  url          → with query params ?page=1&sort=price is infinite
-  timestamp    → new series every millisecond
-
-The test before adding any label:
-  "Can I enumerate every possible value of this label?"
-  method: yes (GET, POST, ...) — safe to use ✅
-  user_id: no (grows forever)  — never use ❌
-```
-
-### Labels Added Automatically by Prometheus
-
-```
-When Prometheus scrapes a target, it adds target labels automatically.
-You did not write these — the Prometheus Operator sets them from CRDs:
-
-http_requests_total{
-  method="GET",                                       ← your application label
-  status="200",                                       ← your application label
-  job="default/order-api/0",                          ← from ServiceMonitor
-  instance="10.244.0.12:8080",                        ← pod IP:port
-  namespace="default",                                ← from Kubernetes metadata
-  pod="order-api-deployment-abc123",                  ← pod name
-  service="order-api",                                ← service name
-  container="order-api"                               ← container name
-}
-```
-
 ---
 
 ## The Prometheus Operator — Why It Exists
@@ -731,7 +308,8 @@ What happens automatically (no human intervention required):
   3. Generates prometheus.yaml scrape_config with real pod IPs
   4. POSTs to Prometheus /-/reload endpoint (no restart needed)
   5. Prometheus scrapes inventory-service within 30 seconds
-  6. Pod restarts with new IP → Operator updates config automatically
+  6. Pod restarts with new IP → Kubernetes updates the Endpoints object → 
+     Operator's watch fires on the Endpoints change → config regenerated automatically
 
 Benefits:
   Fully self-service — development team manages their own ServiceMonitor
@@ -740,7 +318,7 @@ Benefits:
   PrometheusRule CRD follows the same pattern for alert rules
 ```
 
-### CRDs Installed by the Operator
+### CRDs Installed by the Prometheus Operator
 
 ```bash
 # Verify CRDs are installed after Step 5
@@ -753,6 +331,7 @@ alertmanagerconfigs.monitoring.coreos.com    ← Alertmanager routing per namesp
 alertmanagers.monitoring.coreos.com          ← Deploy Alertmanager instances
 podmonitors.monitoring.coreos.com            ← Scrape pods directly (no Service)
 probes.monitoring.coreos.com                 ← Blackbox Exporter probes (Demo 19)
+prometheusagents.monitoring.coreos.com       ← Prometheus Agents 
 prometheuses.monitoring.coreos.com           ← Deploy Prometheus instances
 prometheusrules.monitoring.coreos.com        ← Alerting and recording rules
 scrapeconfigs.monitoring.coreos.com          ← Low-level scrape config (non-CRD)
@@ -762,7 +341,902 @@ thanosrulers.monitoring.coreos.com           ← Federated alerting with Thanos
 
 ---
 
-## scrape_interval vs evaluation_interval — Two Separate Clocks
+
+### Google's Four Golden Signals
+
+Google's SRE Book defines four signals that, together, give you sufficient
+visibility into any service. Every metric in this demo and every demo that follows
+maps to one of these four. This is not theory — it is the framework Google uses
+in production.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  Google's Four Golden Signals                           │
+├───────────────┬─────────────────────────────────────────────────────────┤
+│  LATENCY      │ How long it takes to serve a request                    │
+│               │ Prometheus: histogram_quantile(0.99, rate(bucket[5m]))  │
+│               │ Key: distinguish successful vs failed request latency   │
+│               │ A slow error is different from a fast error             │
+├───────────────┼─────────────────────────────────────────────────────────┤
+│  TRAFFIC      │ How much demand is on your system right now             │
+│               │ Prometheus: sum(rate(http_requests_total[5m]))          │
+│               │ Unit: requests/second, queries/second, writes/second    │
+├───────────────┼─────────────────────────────────────────────────────────┤
+│  ERRORS       │ Rate of requests that fail                              │
+│               │ Prometheus: rate(requests_total{status=~"5.."}[5m])    │
+│               │ Covers explicit (500 codes) and implicit (wrong content)│
+├───────────────┼─────────────────────────────────────────────────────────┤
+│  SATURATION   │ How full or overloaded the service is                   │
+│               │ Prometheus: memory_bytes / memory_limit_bytes           │
+│               │ Measure utilisation against capacity, not raw values    │
+└───────────────┴─────────────────────────────────────────────────────────┘
+```
+
+> **Why this framework matters:** Teams that alert on symptoms (the four golden
+> signals — things users actually experience) catch real problems. Teams that alert
+> on causes alone get alert fatigue and miss the real issues. Monitor what users
+> feel first, then drill into causes.
+
+---
+
+
+### Symptoms vs Causes in Observability
+
+This distinction is one of the most important concepts in the Google SRE model
+and one of the most frequently misunderstood by engineers new to monitoring.
+
+#### Symptom — What You Observe
+
+A symptom is an externally visible signal that something is wrong. It surfaces
+through your monitoring stack — metrics, logs, traces showing something has changed.
+
+```
+Examples of symptoms (alert on these):
+  API p99 latency > 2 seconds
+  Error rate > 1% of requests
+  Pod restart count increasing
+  Queue depth growing continuously
+  CPU saturation > 90% for > 5 minutes
+```
+
+Key property: symptoms tell you **that** something is wrong, not **why**.
+
+#### Cause — Why It Happened
+
+A cause is the underlying reason that produced the symptom.
+You discover causes through investigation — logs, traces, profiling, code review.
+
+```
+Examples of causes (investigate to find these):
+  Memory leak         → pod OOMKilled           → pod restarts (symptom)
+  Slow database query → connection pool exhaust  → API latency spike (symptom)
+  Bad deployment      → nil pointer exception    → 500 error rate (symptom)
+  Missing index       → full table scan on DB    → high CPU + latency (symptom)
+```
+
+#### Real-World Scenarios — Symptom → Cause Chain
+
+```
+Scenario 1: E-commerce checkout is slow
+  Symptom : p99 checkout latency > 8 seconds  (alert fires)
+  Signal  : Prometheus histogram_quantile shows spike
+  Causes  : Payment service dependency timeout
+            DB connection pool exhausted under Black Friday load
+            Network partition between services
+
+Scenario 2: Kubernetes pods restarting
+  Symptom : kube_pod_container_status_restarts_total increasing
+  Signal  : Prometheus kube-state-metrics shows restart counter climbing
+  Causes  : OOMKilled — memory limit too low for actual usage
+            Application crash loop — bug in new deployment
+            Liveness probe misconfigured — killing healthy pods
+
+Scenario 3: Order API errors spiking
+  Symptom : HTTP 500 rate > 5% (SLO breach imminent)
+  Signal  : Prometheus http_requests_total{status=~"5.."} rising
+  Causes  : New buggy deployment 30 minutes ago
+            Downstream inventory service returning errors
+            Database schema migration breaking queries
+```
+
+#### The Three Pillars Bridge the Gap
+
+```
+Metrics  → Detect symptoms     "p99 latency is 8 seconds — something is wrong"
+Logs     → Provide context     "DB connection: timeout after 5000ms"
+Traces   → Show request flow   "Request spent 7.9s waiting for DB connection"
+
+Together → Infer the cause     "DB connection pool is exhausted"
+```
+
+#### Common Mistakes
+
+```
+WRONG approach: alert on causes only
+  "CPU > 80%"         → alert fires constantly on healthy bursts
+  "Memory > 70%"      → fires on expected normal usage
+  Result: alert fatigue, on-call team stops responding
+
+RIGHT approach: alert on symptoms, investigate causes
+  "p99 latency > 2s"  → users are feeling slowness — investigate
+  "Error rate > 1%"   → users are seeing failures — investigate
+  Result: every alert means a real user impact
+```
+
+> **The mental model:** Symptom = smoke (your monitoring shows it).
+> Cause = fire (your engineering effort finds and fixes it).
+> Prometheus shows you the smoke clearly. Finding the fire is the SRE's job.
+
+---
+
+
+### Why Prometheus Uses a Pull Model
+
+The single most important architectural decision in Prometheus: it reaches
+out to targets rather than targets sending data to Prometheus. This is called
+the **pull model**.
+
+#### How Pull vs Push Work
+
+```
+Push model (traditional — StatsD, Graphite, many agents):
+
+  App instance 1 ──────────────────────────────────────────► Monitoring server
+  App instance 2 ──────────────────────────────────────────► Monitoring server
+  App instance 3 ──────────────────────────────────────────► Monitoring server
+
+  App decides: when to send, how often, what format
+  If app is broken: it may still push — masking the failure
+  Network failure: ambiguous — is the app down, or just not pushing?
+  Thundering herd: 1000 pods restart simultaneously and flood the server
+
+
+Pull model (Prometheus):
+
+  Prometheus ─── HTTP GET /metrics every 15s ──► App instance 1
+  Prometheus ─── HTTP GET /metrics every 15s ──► App instance 2
+  Prometheus ─── HTTP GET /metrics every 15s ──► App instance 3
+
+  Prometheus controls: when to scrape, how often, which targets exist
+  If scrape fails: Prometheus knows immediately — sets up{instance="..."} = 0
+  Network failure: explicit and visible — scrape fails with connection error
+  Thundering herd: Prometheus paces the scrapes — targets cannot flood it
+```
+
+#### Why Pull Wins for Kubernetes Monitoring
+
+```
+1. Prometheus controls the scrape rate
+   One place to tune: scrape_interval in prometheus.yaml or values.yaml
+   No risk of apps flooding the system during startup bursts
+
+2. Failure is explicit and unambiguous
+   Scrape failure → up{instance="..."} = 0  (you can alert on this)
+   Push: absence of data is ambiguous — down or just no traffic?
+
+3. Centralised instance discovery
+   Prometheus uses Kubernetes API for service discovery via Operator
+   New pod starts → Prometheus discovers it via ServiceMonitor in < 30s
+   Pod terminates → scrape target disappears cleanly
+
+4. Debug any target on demand
+   Point Prometheus at any pod IP without changing the app
+   Invaluable during incidents for investigating specific instances
+
+5. Configuration lives in one place
+   ServiceMonitor CRDs define what gets scraped — not scattered configs
+```
+
+#### When Pull Is the Wrong Choice — Use Push Instead
+
+```
+Problem 1: Short-lived batch jobs
+  A Kubernetes Job runs for 45 seconds then exits.
+  Prometheus scrapes every 15 seconds — the job may complete between scrapes.
+  Metrics are never captured.
+
+  Solution: Pushgateway
+  Job pushes metrics to Pushgateway when it completes.
+  Prometheus scrapes Pushgateway (long-lived) on its normal schedule.
+
+  ⚠️  Pushgateway warning: no TTL by default — stale metrics persist after
+      job deletion. Always label with job name and delete metrics explicitly
+      on job completion via the Pushgateway API.
+
+Problem 2: AWS Lambda / Fargate / ephemeral workloads
+  Lambda runs for 50ms, has no stable network address, no fixed IP.
+  Prometheus cannot reach it — no inbound connectivity, no fixed endpoint.
+
+  Solution: Push to CloudWatch (covered in AWS observability project),
+  or push to a Pushgateway the Lambda knows about.
+  This is exactly why CloudWatch uses push — Lambda has no inbound address.
+
+Problem 3: Strict network isolation (private subnets, no inbound access)
+  App is in a private VPC subnet. Prometheus cannot reach port 8080.
+
+  Solution: Deploy Prometheus in the same subnet (so Prometheus can reach out to the app),
+  or deploy Grafana Alloy inside the private subnet alongside the app.
+  Alloy scrapes the app locally (no inbound needed — same subnet),
+  then remote_writes the metrics outbound to a Prometheus remote_write receiver endpoint.
+  Requires Prometheus flag: --enable-feature=remote-write-receiver
+  This works because Alloy only needs outbound network access, not inbound.
+```
+
+> **The rule:** Pull works for stable, long-running services with known network
+> addresses — almost every Kubernetes workload. Use push only for ephemeral
+> workloads with no stable address.
+
+---
+
+
+### The TSDB — How Prometheus Stores Data on Disk
+
+TSDB (Time Series Database) is Prometheus's embedded storage engine.
+Understanding it helps you reason about disk usage, query performance,
+retention policies, and what happens when Prometheus restarts.
+
+#### What a Time Series Is
+
+Every unique combination of metric name + labels is a separate **time series**:
+
+```
+http_requests_total{job="api", instance="10.0.0.1:8080", method="GET",  status="200"}
+http_requests_total{job="api", instance="10.0.0.1:8080", method="GET",  status="500"}
+http_requests_total{job="api", instance="10.0.0.1:8080", method="POST", status="200"}
+http_requests_total{job="api", instance="10.0.0.2:8080", method="GET",  status="200"}
+         ↑               ↑                                ↑               ↑
+      metric name     labels                      4 completely separate time series
+```
+
+Each time series is a sequence of `(timestamp, float64)` pairs:
+
+```
+t=1715000000, value=14823.0
+t=1715000015, value=14829.0   ← +6 requests in 15 seconds
+t=1715000030, value=14841.0   ← +12 requests in 15 seconds (traffic increased)
+t=1715000045, value=14841.0   ← same value (no new requests in this window)
+```
+
+#### TSDB On-Disk Layout & Data flow
+
+> **Reference:** For the disk layout, full TSDB storage glossary (WAL, Head Block, on-disk blocks,
+> Compactor, and the Startup data flow), see
+> [Demo 00 §6 — TSDB Storage Key Terms](../00-kube-prometheus-stack/new.md#prometheus-tsdb-storage-internals---reference).
+> This section focuses on the physical on-disk layout only.
+
+
+#### The Write Path — What Happens Every 15 Seconds
+
+```
+Step 1: Scrape
+  Prometheus sends HTTP GET /metrics to the target
+  Target responds with OpenMetrics text format
+  Prometheus parses response → raw sample list in memory
+
+Step 2: WAL append
+  Every sample written to WAL immediately (sequential write — fast)
+  WAL provides crash safety: if Prometheus dies, WAL is replayed on restart
+  This is the same pattern as database transaction logs
+
+Step 3: Head block (in-memory)
+  Samples stored in compressed in-memory head block
+  Head block covers approximately the most recent 2 hours
+  Queries against recent data read from head block (very fast — no disk I/O)
+
+Step 4: Block creation (every 2 hours)
+  Head block flushed to disk as a new immutable 2-hour block
+  Block contains: chunks (compressed samples) + index + metadata
+
+Step 5: Compaction (background process)
+  Small blocks merged into larger blocks progressively:
+  2h → 6h → 24h → 48h → up to maximum block duration (31d default)
+  Larger blocks = fewer files = faster range queries
+
+Step 6: Retention enforcement
+  Blocks older than --storage.tsdb.retention.time (default: 15d) are deleted
+  Or when --storage.tsdb.retention.size is exceeded
+```
+
+#### RAM Usage — What Drives It
+
+```
+Prometheus RAM is dominated by the head block (in-memory recent data):
+
+Approximate RAM per active series: ~2–3 KB in the head block
+
+Example calculation for a medium cluster:
+  Node Exporter:       10 nodes × 300 metrics  =  3,000 series ×  3KB =   9 MB
+  kube-state-metrics:  1 cluster × 5,000 metrics = 5,000 series ×  3KB =  15 MB
+  App metrics:         5 services × 2,000 metrics = 10,000 series × 3KB =  30 MB
+  ──────────────────────────────────────────────────────────────────────────────
+  Total:               18,000 series                                  ~  54 MB
+
+Cardinality explosion with user_id label (100,000 active users):
+  5 services × 2,000 metrics × 100,000 users = 1,000,000,000 series
+  1,000,000,000 × 3KB = 3 TB RAM  ← Prometheus OOMKills
+  This is a real scenario that has happened to production companies
+
+Check current series count:
+  Prometheus UI → Status → Runtime & Build Information → Head Series
+  OR query: prometheus_tsdb_head_series
+```
+
+---
+
+
+### The Four Metric Types
+
+Prometheus has exactly four metric types. Choosing the right one and using
+the right PromQL functions with each is a core production skill.
+
+#### Counter
+
+A counter **only ever increases**. It resets to zero when the process restarts.
+`rate()` handles counter resets automatically.
+
+**When to use:** requests, errors, bytes transferred, tasks completed, retries.
+**Never use for:** values that go down (memory, queue depth, active connections).
+
+**Example counter metrics(OpenMetrics Text Format):**
+```
+# HELP http_requests_total Total number of HTTP requests processed
+# TYPE http_requests_total counter
+http_requests_total{method="GET",  path="/api/orders", status="200"} 482931
+http_requests_total{method="GET",  path="/api/orders", status="500"} 142
+http_requests_total{method="POST", path="/api/orders", status="201"} 91283
+http_requests_total{method="POST", path="/api/orders", status="400"} 837
+```
+
+**Correct PromQL for counters:**
+```
+  WRONG: http_requests_total
+    Returns raw cumulative total (482931) — useless for alerting
+    You cannot set a meaningful threshold on a monotonically increasing number
+
+  CORRECT: rate(http_requests_total[5m])
+    Per-second request rate over the last 5 minutes
+    Handles counter resets (pod restarts) automatically
+    Meaningful: "14.2 requests per second"
+
+  CORRECT: increase(http_requests_total[1h])
+    Total new requests in the last 1 hour — useful for trend reporting
+    "3,420 new requests in the past hour"
+
+  Rule: never use a raw counter value in an alert or dashboard panel.
+        Always wrap with rate() or increase().
+```
+
+**Scenario: http_requests_total on pod "test-app-abc":**
+```
+  t=0m    counter = 48,203   (pod running normally)
+  t=1m    counter = 48,231   (+28 requests)
+  t=2m    counter = 48,247   (+16 requests)
+  t=2m30s POD RESTARTS — counter resets to 0
+  t=3m    counter = 14       (new process, counter starts fresh)
+  t=4m    counter = 31       (+17 requests)
+
+Raw data seen by Prometheus:
+  48203 → 48231 → 48247 → 0 → 14 → 31
+
+If you used the raw counter: at t=3m you would see a massive drop to 0,
+and rate() would calculate a NEGATIVE rate (48247 → 0 = decrease).
+
+How rate() handles this automatically:
+  rate() detects when a value drops (48247 → 0).
+  It treats any drop as a counter reset.
+  It assumes: the counter went from 48247 up to some maximum, then reset to 0.
+  It adds the previous value to the post-reset values before calculating:
+    effective_value_at_t3m = 48247 + 14 = 48261
+    effective_value_at_t4m = 48247 + 31 = 48278
+  Now the rate calculation is correct — the gap across the restart
+  is treated as continuous, not as a drop.
+
+Result: rate() shows ~0.27 req/s across the restart window — accurate.
+        The restart is invisible to the rate calculation.
+```
+
+#### Gauge
+
+A gauge **goes up and down**. It represents a snapshot of a current value.
+
+**When to use:** memory usage, CPU temperature, queue depth, active connections,
+goroutine count, pod replica count.
+**Never use for:** monotonically increasing values.
+
+**Example gauge metrics(OpenMetrics Text Format):**
+```
+# HELP node_memory_MemAvailable_bytes Memory available for new allocations
+# TYPE node_memory_MemAvailable_bytes gauge
+node_memory_MemAvailable_bytes 4294967296
+
+# HELP go_goroutines Number of goroutines that currently exist
+# TYPE go_goroutines gauge
+go_goroutines 42
+
+# HELP kube_deployment_status_replicas_available Deployment available replicas
+# TYPE kube_deployment_status_replicas_available gauge
+kube_deployment_status_replicas_available{namespace="default",deployment="api"} 3
+```
+
+
+**Correct PromQL for gauges:**
+```
+  CORRECT: node_memory_MemAvailable_bytes / 1024 / 1024 / 1024
+    Current available memory in GB — query directly, no function needed
+
+  CORRECT: predict_linear(node_filesystem_avail_bytes[6h], 24 * 3600)
+    Project current disk trend 24 hours forward
+    "At current rate, disk will be full in X hours" — proactive alerting
+
+  CORRECT: delta(go_goroutines[10m])
+    How much did goroutine count change in the last 10 minutes?
+    Positive delta that keeps growing = possible goroutine leak
+
+  WRONG: rate(node_memory_MemAvailable_bytes[5m])
+    rate() assumes monotonic increase (counter semantics)
+    On a gauge it produces nonsense when the value decreases
+```
+
+#### Histogram
+
+A histogram **samples observations into configurable buckets** and also tracks
+`_sum` (total of all observed values) and `_count` (number of observations).
+
+**When to use:** request duration, response size, database query time.
+**Critical:** bucket boundaries must be defined at instrumentation time.
+
+**Example histogram metrics(OpenMetrics Text Format):**
+```
+# HELP http_request_duration_seconds Request latency histogram
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_bucket{le="0.005"} 724
+http_request_duration_seconds_bucket{le="0.01"}  1205
+http_request_duration_seconds_bucket{le="0.025"} 2891
+http_request_duration_seconds_bucket{le="0.05"}  4201
+http_request_duration_seconds_bucket{le="0.1"}   4803
+http_request_duration_seconds_bucket{le="0.25"}  4961
+http_request_duration_seconds_bucket{le="0.5"}   4989
+http_request_duration_seconds_bucket{le="1"}     4997
+http_request_duration_seconds_bucket{le="+Inf"}  5000
+http_request_duration_seconds_sum   184.231
+http_request_duration_seconds_count 5000
+```
+
+
+**Reading the above histogram:**
+```
+  724 of 5000 requests completed in ≤ 5ms      (14.5% very fast)
+  4803 of 5000 requests completed in ≤ 100ms   (96% under SLO if SLO = 100ms)
+  5000 - 4997 = 3 requests took more than 1 second
+  Average latency = 184.231 / 5000 = 36.8ms
+
+Calculating p99 latency (the most important latency metric):
+  histogram_quantile(
+    0.99,
+    rate(http_request_duration_seconds_bucket[5m])
+  )
+  → histogram_quantile interpolates between bucket boundaries
+  → Design buckets to bracket your SLO (e.g. le="0.1" if SLO is 100ms)
+
+Why three series (_bucket, _sum, _count)?
+  _bucket: cumulative — "how many requests fell below this threshold?"
+  _sum:    total observed duration — divide by _count for average latency
+  _count:  number of observations — same semantics as a counter
+
+```
+
+**`p99` with example data:**
+```
+Your histogram data:
+  http_request_duration_seconds_bucket{le="0.005"} 724
+  http_request_duration_seconds_bucket{le="0.1"}   4803
+  http_request_duration_seconds_bucket{le="+Inf"}  5000
+  http_request_duration_seconds_count              5000
+
+p99 means: "find the duration value X such that 99% of requests
+            completed in ≤ X seconds"
+
+99% of 5000 = 4950 requests must have completed
+
+From the data:
+  4803 requests completed in ≤ 100ms
+  5000 requests completed in ≤ +Inf (all of them)
+  The 4950th request falls between le="0.1" and le="+Inf"
+
+histogram_quantile(0.99) interpolates linearly between these two buckets:
+  fraction through the gap = (4950 - 4803) / (5000 - 4803) = 147 / 197 = 0.746
+  interpolated duration = 0.1 + 0.746 × (∞ - 0.1)
+  (Since +Inf is the last bucket, Prometheus uses the second-to-last bucket value)
+  Result: approximately 241ms p99
+
+Meaning: 99% of requests complete in under 241ms.
+The 1% slowest take longer than 241ms.
+```
+
+**Why  `rate()` is required in histogram_quantile:**
+```
+The _bucket metrics are COUNTERS — they only ever increase.
+After 1 hour of traffic: le="0.1" bucket might be at 288,180 (very large number).
+If you pass raw counters to histogram_quantile:
+  histogram_quantile(0.99, http_request_duration_seconds_bucket)
+  → result is the p99 of ALL requests since Prometheus started
+  → not useful for "what is my current latency right now?"
+
+With rate():
+  rate(http_request_duration_seconds_bucket[5m])
+  → per-second rate of requests hitting each bucket in the last 5 minutes
+  → histogram_quantile sees the CURRENT distribution of latency
+  → result is "the p99 of requests in the last 5 minutes"
+```
+
+**How Bucket design to bracket SLO:**
+```
+SLO: 95% of requests must complete in ≤ 200ms
+
+Poor bucket design (doesn't bracket the SLO):
+  le="0.1"   (100ms)
+  le="0.5"   (500ms)   ← SLO threshold (200ms) is between these two
+  le="+Inf"
+
+  histogram_quantile must interpolate across the 100ms → 500ms gap.
+  It assumes uniform distribution within the bucket — meaning it thinks
+  requests are evenly spread between 100ms and 500ms.
+  If your actual p95 is 195ms, it might report 295ms — 50% off.
+
+Good bucket design (brackets the SLO):
+  le="0.1"   (100ms)
+  le="0.15"  (150ms)
+  le="0.2"   (200ms)  ← SLO threshold has its own bucket
+  le="0.25"  (250ms)
+  le="0.5"   (500ms)
+
+  Now histogram_quantile interpolates across a 150ms → 200ms gap.
+  If your actual p95 is 195ms, it reports ~194ms — much more accurate.
+
+Rule: always put a bucket boundary at or near every SLO threshold value.
+```
+
+#### Native Histograms (Prometheus 3.x)
+
+New in Prometheus 3.0: dynamic buckets, more accurate, lower cardinality.
+Classic histograms (everything above) have one fundamental problem: **bucket
+boundaries are fixed at instrumentation time**. When you write the code, you
+decide `le="0.005"`, `le="0.01"`, `le="0.025"` etc. If your latency profile
+changes — say your app gets 10× slower after a database migration — your
+buckets no longer bracket the interesting range and your p99 estimates become
+inaccurate. Fixing it requires a code change, a redeploy, and losing historical
+comparability.
+
+**Native histograms solve this by using dynamic, automatically-adjusted buckets.**
+
+```
+Classic histogram (one time series per bucket):
+  http_request_duration_seconds_bucket{le="0.005"} 724
+  http_request_duration_seconds_bucket{le="0.01"}  1205
+  http_request_duration_seconds_bucket{le="0.025"} 2891
+  ... (one series per bucket = high cardinality)
+  http_request_duration_seconds_count              5000
+  http_request_duration_seconds_sum                184.2
+
+  10 buckets = 12 time series per label combination
+  If you have 3 pods × 4 endpoints = 36 label combinations = 432 series
+
+Native histogram (one time series for the entire histogram):
+  http_request_duration_seconds (native)
+  → stored as a single series with a special internal encoding
+  → buckets are stored as a compact schema inside one sample
+  → Prometheus automatically places bucket boundaries using
+     exponential bucketing (powers of 2^(1/schema_factor))
+
+  3 pods × 4 endpoints = 12 series (not 432)
+```
+
+**Key differences:**
+
+| Property | Classic Histogram | Native Histogram |
+|---|---|---|
+| Bucket boundaries | Fixed at code time | Dynamic, auto-adjusted |
+| Cardinality | High (1 series per bucket) | Low (1 series total) |
+| Accuracy | Depends on bucket design | Higher — more buckets automatically |
+| PromQL function | `histogram_quantile()` | `histogram_quantile()` (same, works on both) |
+| Client library support | Universal | Growing — most major languages supported |
+| Storage format | Multiple float64 series | Special encoded single series |
+| When to use | Broad compatibility needed | Prometheus 3.x + modern client libraries |
+
+**In this demo series:** native histograms are enabled via
+`enableFeatures: [native-histograms]` in `values.yaml` (Step 4).
+Client libraries that support native histograms will send them automatically.
+Older clients continue sending classic histograms — both coexist safely.
+`histogram_quantile()` works on both formats without any query change.
+
+#### Summary
+
+A summary **calculates quantiles client-side** (inside the application).
+It exports pre-calculated quantile values plus `_sum` and `_count`.
+
+**When to use:** only when you need accurate single-instance quantiles.
+Almost always prefer histogram.
+
+**Example summary metrics(OpenMetrics Text Format):**
+```
+# HELP http_response_size_bytes Response body size in bytes
+# TYPE http_response_size_bytes summary
+http_response_size_bytes{quantile="0"}    245
+http_response_size_bytes{quantile="0.25"} 1024
+http_response_size_bytes{quantile="0.5"}  4096
+http_response_size_bytes{quantile="0.75"} 16384
+http_response_size_bytes{quantile="1"}    524288
+http_response_size_bytes_sum   8473621
+http_response_size_bytes_count 1204
+```
+
+**Summary limitations that make histogram almost always better:**
+```
+  You cannot aggregate summaries across instances:
+    Averaging p99 across 10 pods is mathematically incorrect
+    sum(p99 per pod) / 10 is NOT the p99 across all pods
+
+  Quantile levels are fixed at deploy time:
+    If you instrument with quantile="0.99" but later need p99.9,
+    you must redeploy the application and wait for new data
+
+  When summary is correct:
+    Single-instance application where exact quantiles matter
+    Cannot tolerate any histogram interpolation inaccuracy
+    Specific documented technical requirement for per-instance precision
+```
+
+---
+
+### Histogram vs Summary — When to Use Each
+
+Both histogram and summary measure distributions (latency, request size, response
+time). They look similar at the `/metrics` endpoint but have a fundamental
+architectural difference that makes them behave completely differently in
+production. **Almost always use histogram.**
+
+#### The Core Difference
+
+```
+Histogram: buckets defined at code time, quantiles calculated at query time
+Summary:   quantiles calculated at scrape time (inside the application)
+```
+
+This distinction sounds minor. In practice it determines whether your metrics
+are useful at scale.
+
+#### Why Histogram is Aggregatable and Summary is Not
+
+**Scenario: 3 pods serving your API. You want p99 latency across all pods.**
+
+**With histogram:**
+
+Each pod exposes bucket counts at scrape time:
+
+```
+Pod A (served 100 requests):
+  http_request_duration_seconds_bucket{le="0.1", pod="A"} 82
+  http_request_duration_seconds_bucket{le="0.5", pod="A"} 98
+  http_request_duration_seconds_bucket{le="+Inf", pod="A"} 100
+
+Pod B (served 150 requests):
+  http_request_duration_seconds_bucket{le="0.1", pod="B"} 130
+  http_request_duration_seconds_bucket{le="0.5", pod="B"} 147
+  http_request_duration_seconds_bucket{le="+Inf", pod="B"} 150
+
+Pod C (served 80 requests):
+  http_request_duration_seconds_bucket{le="0.1", pod="C"} 60
+  http_request_duration_seconds_bucket{le="0.5", pod="C"} 78
+  http_request_duration_seconds_bucket{le="+Inf", pod="C"} 80
+```
+
+**PromQL to get p99 across all 3 pods:**
+```promql
+histogram_quantile(0.99,
+  sum by (le) (
+    rate(http_request_duration_seconds_bucket[5m])
+  )
+)
+```
+
+**What sum by (le) does:**
+```
+le="0.1"  → 82 + 130 + 60  = 272 combined requests under 100ms
+le="0.5"  → 98 + 147 + 78  = 323 combined requests under 500ms
+le="+Inf" → 100 + 150 + 80 = 330 total requests (all pods combined)
+```
+
+Now histogram_quantile calculates p99 of the combined 330 requests.
+This is mathematically correct — you are finding the 99th percentile
+of the actual combined request population.
+
+---
+
+**With summary:**
+
+Each pod calculates and exposes its own pre-computed quantiles:
+
+```
+Pod A (calculated its own p99 from 100 requests):
+  http_request_duration_seconds{quantile="0.99", pod="A"} 0.24
+
+Pod B (calculated its own p99 from 150 requests):
+  http_request_duration_seconds{quantile="0.99", pod="B"} 0.31
+
+Pod C (calculated its own p99 from 80 requests):
+  http_request_duration_seconds{quantile="0.99", pod="C"} 0.19
+```
+
+**Attempting to get p99 across all 3 pods:**
+```promql
+avg(http_request_duration_seconds{quantile="0.99"})
+```
+
+**Result: (0.24 + 0.31 + 0.19) / 3 = 0.247**
+
+**This is WRONG.** Here is why:
+
+```
+Pod A: p99 of 100 requests = 0.24s
+Pod B: p99 of 150 requests = 0.31s (more requests, higher load)
+Pod C: p99 of  80 requests = 0.19s (fewer requests)
+
+The correct combined p99 would weight pods by their request count.
+Pod B is serving the most traffic and has the worst latency.
+A simple average treats all three pods equally.
+
+Correct combined p99 = p99 of 330 actual requests from all pods combined.
+But with summary: the raw request data is gone. Each pod only exports
+its pre-computed quantile. You cannot mathematically combine
+"p99 of A" + "p99 of B" + "p99 of C" into "p99 of A+B+C".
+The intermediate data needed for the calculation was discarded at scrape time.
+```
+
+**The aggregation problem visualised:**
+
+```
+Histogram:
+  Pod A: [===82===|====16====|==2==]  (bucket counts — addable)
+  Pod B: [====130=====|==17==|=3=]
+  Pod C: [==60==|==18==|=2=]
+  Sum:   [====272=====|==51==|=7=]   ← mathematically combine, then find p99 ✅
+
+Summary:
+  Pod A: 0.24s  (single number — all detail gone)
+  Pod B: 0.31s  (single number — all detail gone)
+  Pod C: 0.19s  (single number — all detail gone)
+  ???:   cannot reconstruct the original distribution ❌
+```
+
+#### Decision Table
+
+```
+┌──────────────────────────────────────┬─────────────┬─────────────────┐
+│  Requirement                         │  Histogram  │  Summary        │
+├──────────────────────────────────────┼─────────────┼─────────────────┤
+│  Multiple pods / instances           │  ✅ Works   │  ❌ Wrong math  │
+│  SLO compliance monitoring           │  ✅ Correct │  ❌ Inaccurate  │
+│  Grafana dashboards across fleet     │  ✅ Works   │  ❌ Misleading  │
+│  Add new quantile without redeploy   │  ✅ Yes     │  ❌ Must redeploy│
+│  Single instance, exact quantiles    │  ⚠️ Approx  │  ✅ Exact       │
+│  No PromQL, just /metrics read       │  ⚠️ Complex │  ✅ Simple      │
+│  Low client-side CPU overhead        │  ✅ Low     │  ⚠️ Higher      │
+└──────────────────────────────────────┴─────────────┴─────────────────┘
+```
+
+#### When Summary Is Correct (Rare)
+
+Use a summary when ALL of the following are true:
+- Single instance application — never scaled horizontally
+- You need exact quantile values (histogram interpolates, summary is exact)
+- You know exactly which quantiles you need forever (locked at code time)
+- You explicitly cannot use histogram for some documented technical reason
+
+In practice, these conditions are almost never all true simultaneously.
+**Default to histogram for every new metric you instrument.**
+
+---
+
+
+### Labels and Cardinality
+
+Labels are key-value pairs attached to every metric. They make Prometheus
+enormously expressive. They are also the most common source of Prometheus
+OOMKills in production.
+
+#### What Labels Enable
+
+```
+Without labels:
+  http_requests_total = 9283
+  (one number — which service? which endpoint? which status code? unknown)
+
+With labels:
+  http_requests_total{service="orders", method="POST", status="201"} = 8291
+  http_requests_total{service="orders", method="POST", status="500"} = 992
+  http_requests_total{service="orders", method="GET",  status="200"} = 44821
+
+  Now you can answer:
+    What is the error rate for the orders POST endpoint?
+    Which service handles the most traffic?
+    Which HTTP methods are returning errors?
+```
+
+#### Cardinality — The Most Important Production Concern
+
+**Cardinality** = total number of unique time series in the TSDB head block.
+Each unique combination of `{metric_name, all_label_values}` = 1 series.
+
+```
+Safe cardinality example:
+  http_requests_total with bounded labels:
+    service: orders, payment, catalogue    (3 values)
+    method:  GET, POST, PUT, DELETE        (4 values)
+    status:  200, 201, 400, 404, 500, 503  (6 values)
+
+  Total: 3 × 4 × 6 = 72 series            ← perfectly fine ✅
+
+
+Cardinality explosion (this destroys Prometheus in production):
+  Add user_id label (100,000 active users)
+  3 × 4 × 6 × 100,000 = 7,200,000 series
+
+  At ~3 KB RAM per series in the head block:
+  7,200,000 × 3 KB = ~21 GB RAM consumed by ONE metric
+  Prometheus OOMKills → monitoring disappears → during an incident
+  This exact scenario has happened at real companies.
+
+
+Production cardinality targets by cluster size:
+  Small  (< 5 nodes):    50,000 – 200,000 series
+  Medium (5–50 nodes):   200,000 – 1,000,000 series
+  Large  (50+ nodes):    1M+ series (needs tuning and Mimir — Demo 22)
+```
+
+#### Label Cardinality Rules
+
+```
+✅  GOOD labels — bounded, enumerable, stable:
+  service, pod, namespace, method, status_code, region, environment
+  HTTP method: GET, POST, PUT, DELETE — always 4–5 values ✅
+  HTTP status: 200, 404, 500 — always 10–20 common values ✅
+
+❌  BAD labels — unbounded, growing, unique per request:
+  user_id      → grows with every new user (millions)
+  request_id   → unique per request (billions/day)
+  session_id   → same problem as request_id
+  email        → unique per user — same as user_id
+  url          → with query params ?page=1&sort=price is infinite
+  timestamp    → new series every millisecond
+
+The test before adding any label:
+  "Can I enumerate every possible value of this label?"
+  method: yes (GET, POST, ...) — safe to use ✅
+  user_id: no (grows forever)  — never use ❌
+```
+
+#### Labels Added Automatically by Prometheus
+
+```
+When Prometheus scrapes a target, it adds target labels automatically.
+You did not write these — the Prometheus Operator sets them from CRDs:
+
+http_requests_total{
+  method="GET",                                       ← your application label
+  status="200",                                       ← your application label
+  job="default/order-api/0",                          ← from ServiceMonitor
+  instance="10.244.0.12:8080",                        ← pod IP:port
+  namespace="default",                                ← from Kubernetes metadata
+  pod="order-api-deployment-abc123",                  ← pod name
+  service="order-api",                                ← service name
+  container="order-api"                               ← container name
+}
+```
+
+---
+
+
+### scrape_interval vs evaluation_interval
 
 These control different things, run independently, and must be understood separately.
 
@@ -802,168 +1276,111 @@ Production recommendation: set both to 15s (kube-prometheus-stack default)
 
 ---
 
-## Architecture
+### The OpenMetrics Text Format
 
+When Prometheus scrapes a target, the target responds with plain text in the
+OpenMetrics format. Understanding this format lets you read any `/metrics`
+endpoint directly — a skill used constantly during debugging.
+
+**Why plain text?**
+Prometheus's creators deliberately chose a human-readable text format over binary
+protocols (Protobuf, Thrift, etc.) for three reasons:
+- Debuggability: `curl http://pod-ip:9090/metrics` shows you exactly what
+  Prometheus sees — no decoder needed
+- Simplicity: any language can produce a text file; exporters are easy to write
+- Universality: the format became a de facto standard, now formalised as the
+  OpenMetrics specification (CNCF project)
+
+A binary format is also supported (Protobuf) for efficiency at high cardinality,
+but text is the default and what you will see in 99% of cases.
+
+**Format structure — every metric follows this pattern:**
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              Minikube Cluster                                │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │                       monitoring namespace                          │     │
-│  │                                                                     │     │
-│  │  ┌─────────────────────────────────┐  ┌─────────────────────────┐   │     │
-│  │  │    Prometheus Operator          │  │    Alertmanager         │   │     │
-│  │  │    (Deployment, 1 replica)      │  │    (StatefulSet)        │   │     │
-│  │  │                                 │  │    Port 9093            │   │     │
-│  │  │    Watches:                     │  │    Deduplicates +       │   │     │
-│  │  │      ServiceMonitor CRDs        │  │    routes fired alerts  │   │     │
-│  │  │      PodMonitor CRDs            │  │    to Slack / email /   │   │     │
-│  │  │      PrometheusRule CRDs        │  │    PagerDuty            │   │     │
-│  │  │                                 │  └─────────────────────────┘   │     │
-│  │  │    Generates: prometheus.yaml   │                                │     │
-│  │  │    Reloads:   /-/reload API     │  ┌─────────────────────────┐   │     │
-│  │  └─────────────────────────────────┘  │    Grafana              │   │     │ 
-│  │                                       │    (Deployment)         │   │     │  
-│  │  ┌──────────────────────────────────────────────────────────┐   │   │     │
-│  │  │             Prometheus Server                            │   │   │     │
-│  │  │             (StatefulSet, 1 replica, Port 9090)          │   │   │     │
-│  │  │             10Gi PVC for TSDB — 10d retention            │   │   │     │
-│  │  │                                                          │   │   │     │
-│  │  │  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │   │   │     │
-│  │  │  │  Scraper     │  │    TSDB      │  │ Rule Evaluator │  │   │   │     │
-│  │  │  │ Pull /metrics│  │ WAL → Head   │  │ Every 15s      │  │   │   │     │
-│  │  │  │ every 15s    │  │ → Disk Blks  │  │ Recording rules│  │   │   │     │
-│  │  │  └──────┬───────┘  └──────────────┘  │ Alerting rules │  │   │   │     │
-│  │  └─────────┼────────────────────────────┴────────────────┴──┘   │   │     │
-│  │            │                                                        │     │
-│  │   ① HTTP GET /metrics (pull model — Prometheus reaches out)         │     │ 
-│  │            │                                                        │     │
-│  │  ┌─────────▼──────────────────────────────────────────────────┐     │     │
-│  │  │                   Scrape Targets                           │     │     │
-│  │  │  ┌─────────────┐  ┌──────────────────┐  ┌─────────────┐    │     │     │
-│  │  │  │Node Exporter│  │kube-state-metrics│  │  Grafana    │    │     │     │
-│  │  │  │(DaemonSet)  │  │(Deployment)      │  │(self-mon)   │    │     │     │
-│  │  │  │Port 9100    │  │Port 8080         │  │Port 3000    │    │     │     │
-│  │  │  │Host: CPU    │  │K8s API state:    │  │             │    │     │     │
-│  │  │  │mem, disk    │  │pods, deploys,    │  │             │    │     │     │
-│  │  │  │network, fs  │  │PVCs, resource    │  │             │    │     │     │
-│  │  │  │             │  │limits, quotas    │  │             │    │     │     │
-│  │  │  └─────────────┘  └──────────────────┘  └─────────────┘    │     │     │
-│  │  └────────────────────────────────────────────────────────────┘     │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │                       default namespace                             │     │
-│  │  ┌──────────────────────────────────────────────────────────────┐   │     │
-│  │  │  podinfo test app (Deployment, 3 replicas)                   │   │     │
-│  │  │  Port 9898: HTTP API  |  Port 9797: /metrics                 │   │     │
-│  │  │  ServiceMonitor CRD → Operator → scrape config auto-generated│   │     │
-│  │  └──────────────────────────────────────────────────────────────┘   │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-└──────────────────────────────────────────────────────────────────────────────┘
+# HELP <metric_name> <description>     ← human-readable description (optional)
+# TYPE <metric_name> <type>            ← type declaration: counter/gauge/histogram/summary
+<metric_name>{<label>="<value>",...} <float64_value> [<timestamp_ms>]
+```
 
-Signal flows:
-  ① Prometheus ──(HTTP GET /metrics every 15s)──► each target
-  ② Samples ──► WAL ──► head block ──► disk blocks (compaction)
-  ③ PromQL query ──► Prometheus API ──► Grafana / UI
-  ④ Alert rule fires ──► Alertmanager ──► Slack / email
-  ⑤ ServiceMonitor created ──► Operator ──► prometheus.yaml regenerated ──► reload
+**Identifying metric type from naming conventions:**
+```
+node_cpu_seconds_total       → _total suffix = counter convention
+node_memory_MemAvailable_bytes → gauge (snapshot value)
+http_request_duration_seconds_bucket → _bucket suffix = histogram
+go_gc_duration_seconds{quantile=...} → quantile label = summary
 ```
 
 ---
 
-## Versions Used in This Demo
+#### What Is Relabeling?
 
-| Component | Version | Notes |
-|---|---|---|
-| kube-prometheus-stack Helm chart | **84.5.0** | `prometheus-community/kube-prometheus-stack` |
-| Prometheus | **3.4.1** | bundled — `prom/prometheus:v3.4.1` |
-| Prometheus Operator | **0.90.1** | bundled |
-| Alertmanager | **0.28.1** | bundled |
-| Grafana | **12.3.0** | bundled |
-| Node Exporter | **1.11.1** | bundled |
-| kube-state-metrics | **2.18.0** | bundled via kube-state-metrics chart 7.3.0 |
-| podinfo (test app) | **6.7.1** | `ghcr.io/stefanprodan/podinfo:6.7.1` |
-| Minikube | **1.35.0+** | [minikube.sigs.k8s.io](https://minikube.sigs.k8s.io) |
-| Helm | **3.17.0+** | [helm.sh](https://helm.sh) |
-| kubectl | **1.32+** | [kubernetes.io](https://kubernetes.io) |
+When Prometheus discovers a scrape target (via Kubernetes service discovery,
+static config, or any other SD mechanism), it receives a large set of raw
+metadata labels about that target. These raw labels are not suitable to store
+on metrics directly — they use internal naming conventions (`__` prefix), contain
+Kubernetes-specific fields engineers do not need on every metric, and may need
+to be renamed or filtered.
 
-> **Version policy for this project:** Every demo pins explicit chart and image versions.
-> Using `latest` tags breaks reproducibility — a breaking change in a new release
-> makes your environment stop working days after you wrote it.
-> Always check [ArtifactHub](https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack)
-> for the current stable release when starting a new lab environment.
+**Relabeling** is the transformation pipeline that converts raw discovery
+metadata into the final labels that appear on stored metrics.
+
+**Why:** Raw Kubernetes metadata labels (`__meta_kubernetes_pod_name`,
+`__meta_kubernetes_namespace`, etc.) need to be mapped to clean, consistent
+labels (`pod`, `namespace`) that engineers write in PromQL queries.
+
+**When:** Relabeling runs in two places:
+1. **Before scraping** (`relabel_configs`): filters which targets to scrape at all,
+   and sets the target address and labels used during the scrape
+2. **After scraping** (`metric_relabel_configs`): filters and transforms metric
+   labels on samples after they are collected, before storing in TSDB
+
+**How — a worked example:**
+
+```
+Raw discovered labels from Kubernetes API (before relabeling):
+  __address__                            = "10.244.0.12:9797"
+  __meta_kubernetes_namespace            = "default"
+  __meta_kubernetes_pod_name             = "test-app-abc123"
+  __meta_kubernetes_service_name         = "test-app"
+  __meta_kubernetes_pod_label_app        = "test-app"
+  __meta_kubernetes_pod_label_version    = "6.7.1"
+  __scheme__                             = "http"
+  __metrics_path__                       = "/metrics"
+
+Relabeling rules applied by the Prometheus Operator (generated from ServiceMonitor):
+  Rule 1: keep only endpoints where the port name matches "http-metrics"
+  Rule 2: copy __meta_kubernetes_namespace → namespace label
+  Rule 3: copy __meta_kubernetes_pod_name → pod label
+  Rule 4: copy __meta_kubernetes_service_name → service label
+  Rule 5: set job label to "serviceMonitor/default/test-app/0"
+  Rule 6: drop all remaining __ labels (they are internal, not stored)
+
+Final target labels after relabeling:
+  namespace = "default"
+  pod       = "test-app-abc123"
+  service   = "test-app"
+  job       = "serviceMonitor/default/test-app/0"
+  instance  = "10.244.0.12:9797"
+```
+
+Every metric scraped from this target will carry these final labels.
+The raw `__meta_*` labels are never stored — they exist only during the
+relabeling pipeline.
+
+**Where to see relabeling in action:**
+- Prometheus UI → Status → Service Discovery → click "show relabeling" on any target
+- Shows every rule and the label value at each transformation step
+- Essential debugging tool when a metric has an unexpected label value
 
 ---
 
-## Prerequisites
-
-**Software required on your local machine:**
-
-| Tool | Minimum version | Verify command |
-|---|---|---|
-| Minikube | **1.37.0** | `minikube version` |
-| kubectl | **1.34.1** | `kubectl version --client` |
-| Helm | **3.19.0** | `helm version --short` |
-| curl | any | `curl --version` |
-
-**Knowledge expected:**
-- Basic Kubernetes: pods, deployments, services, namespaces, kubectl
-- Basic Helm: `helm repo add`, `helm install`, values files, `helm upgrade`
-- YAML syntax familiarity
-
-**Verify all tools before starting:**
-
-```bash
-minikube version && kubectl version --client && helm version --short
-```
-
-Expected output (your versions may be newer — that is fine):
-```
-minikube version: v1.37.0
-...
-Client Version: v1.34.1
-...
-v3.19.0+g3d8990f
-```
+## Lab Step-by-Step Guide
 
 ---
 
-## Lab Objectives
 
-By the end of this demo you will be able to:
+## Part A — Stack Setup
 
-1. ✅ Explain why Prometheus uses a pull model and when to use Pushgateway instead
-2. ✅ Describe the TSDB write path: scrape → WAL → head block → disk → compaction
-3. ✅ Identify all four metric types from a raw `/metrics` endpoint
-4. ✅ Explain label cardinality and calculate its RAM cost
-5. ✅ Describe what the Prometheus Operator does and how it replaces manual config
-6. ✅ Explain the difference between `scrape_interval` and `evaluation_interval`
-7. ✅ Deploy `kube-prometheus-stack` v84.5.0 with a custom values file
-8. ✅ Navigate Targets, Graph, Service Discovery, and TSDB Status pages
-9. ✅ Deploy a test application and make it auto-discoverable via ServiceMonitor
-10. ✅ Write five PromQL queries covering the four golden signals
-11. ✅ Validate the running configuration with `promtool`
-12. ✅ Simulate CPU load and watch metrics respond in real time
-
----
-
-## Directory Structure
-
-```
-01-prometheus-fundamentals/
-├── README.md                               ← this file
-└── src/
-    ├── values.yaml                         ← kube-prometheus-stack Helm values
-    └── test-app/
-        ├── deployment.yaml                 ← podinfo (3 replicas)
-        ├── service.yaml                    ← ClusterIP Service
-        └── servicemonitor.yaml             ← ServiceMonitor CRD
-```
-
----
-
-## Step 1: Start Minikube
+### Step 1: Start Minikube
 
 `kube-prometheus-stack` requires at least 4 CPUs and 8 GB RAM because it runs
 Prometheus (TSDB in memory), Grafana, Alertmanager, Prometheus Operator,
@@ -972,11 +1389,14 @@ Node Exporter, and kube-state-metrics simultaneously — before any applications
 ```bash
 minikube start \
   --profile observ \
-  --cpus=4 \
-  --memory=8192 \
-  --driver=docker \
-  --kubernetes-version=v1.33.0
+  --cpus=4 \           # allocate 4 vCPUs — minimum for the full stack
+  --memory=8192 \      # 8 GiB RAM — Prometheus head block is memory-intensive
+  --driver=docker \    # Docker driver — portable across macOS, Linux, Windows
+  --kubernetes-version=v1.33.0  # N-1 from latest stable; v1.32 is EOL
 ```
+
+**Why `--memory=8192`?**
+Why 8GB? Prometheus's head block (last ~2h of metrics) lives in RAM.Each active time series ≈ 3KB in the head block.30,000 series (typical fresh install) = ~90MB.With all kube-prometheus-stack components scraped: expect 500MB–1.5GB.The remaining RAM covers Grafana, Alertmanager, and the Kubernetes control plane.
 
 **Why `--driver=docker`?**
 Docker is the most portable Minikube driver — works on macOS, Linux, and Windows
@@ -1009,7 +1429,7 @@ minikube   Ready    control-plane   60s   v1.33.0
 
 ---
 
-## Step 2: Add the Helm Repository
+### Step 2: Add the Helm Repository
 
 ```bash
 helm repo add prometheus-community \
@@ -1042,7 +1462,7 @@ If this returns no results, run `helm repo update` again and retry.
 
 ---
 
-## Step 3: Create the Monitoring Namespace
+### Step 3: Create the Monitoring Namespace
 
 ```bash
 kubectl create namespace monitoring
@@ -1075,13 +1495,16 @@ monitoring   Active   5s
 
 ---
 
-## Step 4: Create the Helm Values File
+### Step 4: Create the Helm Values File
 
 The `values.yaml` file overrides defaults from the chart. Only specify what
 you are changing — everything else inherits from the chart's default `values.yaml`.
 Each setting is explained below with the reason for the choice.
 
-Create `src/values.yaml`:
+
+#### Create `src/values.yaml`
+
+**src/values.yaml:**
 
 ```yaml
 # src/values.yaml
@@ -1226,12 +1649,240 @@ prometheusOperator:
 
 ---
 
-## Step 5: Install kube-prometheus-stack
+### Understanding the values.yaml Parameters
+
+The `values.yaml` in Step 4 overrides chart defaults. This section explains
+every parameter set, the concepts behind them, and related settings you should
+know about before running `helm install`.
+
+#### scrapeInterval and evaluationInterval
+
+```yaml
+scrapeInterval: "15s"
+evaluationInterval: "15s"
+```
+
+These are two independent clocks. **scrapeInterval** controls how often
+Prometheus sends `HTTP GET /metrics` to each target. **evaluationInterval**
+controls how often Prometheus runs every alerting and recording rule.
+
+Setting both to `15s` means: Prometheus scrapes every 15 seconds AND
+evaluates all rules every 15 seconds against fresh data. If `evaluationInterval`
+were shorter than `scrapeInterval`, rules would run against stale data.
+
+Production guidance: keep both equal at `15s` for standard workloads.
+Use `30s` for cost-sensitive environments. Use `5s` only for high-frequency
+financial or gaming workloads where the extra storage cost is justified.
+
+#### retention and storageSpec
+
+```yaml
+retention: 10d
+storageSpec:
+  volumeClaimTemplate:
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
+```
+
+`retention: 10d` tells Prometheus to delete TSDB blocks older than 10 days.
+Without `storageSpec`, the TSDB lives in the pod's ephemeral filesystem — every
+pod restart (upgrade, OOMKill, node eviction) loses all metric history. With
+`storageSpec`, Kubernetes creates a PersistentVolumeClaim and Prometheus writes
+its TSDB there. Data survives any number of pod restarts on the same node.
+
+Production guidance: set `retentionSize` as well to prevent the PVC from
+filling completely: `retentionSize: "8GiB"` (leave 20% headroom on a 10Gi PVC).
+
+#### serviceMonitorSelectorNilUsesHelmValues — The Most Important Selector Setting
+
+```yaml
+serviceMonitorSelectorNilUsesHelmValues: false
+podMonitorSelectorNilUsesHelmValues: false
+ruleSelectorNilUsesHelmValues: false
+```
+
+This setting controls which ServiceMonitors, PodMonitors, and PrometheusRules
+Prometheus discovers across the cluster. Understanding it prevents the most
+common "my service isn't being scraped" confusion.
+
+**When `true` (default):** Prometheus only discovers ServiceMonitors that have
+the label `release: kube-prometheus-stack` (matching the Helm release name).
+
+```
+Scenario (true — default):
+  Developer creates a ServiceMonitor in namespace "orders":
+    metadata:
+      name: order-api
+      namespace: orders
+      labels:
+        app: order-api
+        # ← NO release: kube-prometheus-stack label
+  Result: Prometheus IGNORES this ServiceMonitor ❌
+  Developer confused: "why isn't my service being scraped?"
+```
+
+**When `false`:** Prometheus discovers ALL ServiceMonitors cluster-wide,
+regardless of labels.
+
+```
+Scenario (false — what we set):
+  Developer creates a ServiceMonitor in namespace "orders":
+    metadata:
+      name: order-api
+      namespace: orders
+      labels:
+        app: order-api
+        # ← no release label needed
+  Result: Prometheus discovers and scrapes it ✅
+  Self-service monitoring — no platform team involvement needed
+```
+
+The trade-off: with `false`, any team with RBAC permission to create a
+ServiceMonitor in their namespace can add targets to Prometheus. Use Kubernetes
+RBAC on the `servicemonitors` CRD to control this in production.
+
+#### enableFeatures: native-histograms
+
+```yaml
+enableFeatures:
+  - native-histograms
+```
+
+Native histograms (new in Prometheus 3.0) store histogram data more efficiently
+than classic histograms. Classic histograms create one time series per bucket
+(e.g. `le="0.005"`, `le="0.01"`, etc.) — a 10-bucket histogram = 10+ series.
+Native histograms store the entire histogram as one series with dynamic buckets,
+reducing cardinality significantly.
+
+This is safe to enable — client libraries that do not yet support native
+histograms continue sending classic format and Prometheus handles both simultaneously.
+
+#### Grafana Unified Alerting — What It Is
+
+```yaml
+grafana:
+  grafana.ini:
+    unified_alerting:
+      enabled: true
+    alerting:
+      enabled: false
+```
+
+**What is Grafana Unified Alerting?**
+
+Grafana historically had two alerting systems:
+
+- **Legacy alerting** (pre-Grafana 8): alert rules were embedded in individual
+  dashboard panels. Alerts were tightly coupled to dashboards — you could not
+  alert on a metric without first creating a dashboard panel for it. Notification
+  channels were configured per-alert.
+
+- **Unified Alerting** (Grafana 8+, default in Grafana 9, only option in Grafana 11+):
+  alert rules are decoupled from dashboards entirely. Alerts are managed in a
+  centralised Alerting section. Prometheus-style alert rules (from PrometheusRule CRDs
+  via Alertmanager) are visible alongside Grafana-managed alerts in one unified view.
+  Contact points and notification policies replace notification channels.
+
+Grafana 11 removed legacy alerting from the codebase. Grafana 12 (what we use)
+continues this — there is no legacy alerting. The `alerting.enabled: false` and
+`unified_alerting.enabled: true` settings make this explicit and prevent startup
+warnings.
+
+**What unified alerting gives you that legacy did not:**
+- Alert rules from multiple data sources (Prometheus, Loki, Grafana Mimir) in one view
+- Prometheus-compatible alert state machine (Pending → Firing → Resolved)
+- Silences and notification policies that work across all alert types
+- Alert rules stored in the Grafana database and provisionable as code
+
+Full hands-on coverage: **Demo 13 — Grafana Unified Alerting**.
+
+#### Alertmanager Silence State — Why Storage Matters
+
+```yaml
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 1Gi
+```
+
+**What are silences?**
+
+A silence is a time-bounded suppression rule in Alertmanager. When an on-call
+engineer receives an alert at 2am that they already know about (planned
+maintenance, known flapping), they create a silence: "suppress all alerts
+matching `alertname=NodeHighCPU` for the next 4 hours." Alertmanager stops
+sending notifications for matching alerts until the silence expires.
+
+**Why silences need persistent storage:**
+
+Without the PVC, silences live only in the Alertmanager pod's memory. A pod
+restart — caused by a Kubernetes upgrade, node maintenance, OOMKill, or even
+a routine `helm upgrade` — erases all active silences instantly. Every alert
+that was suppressed starts notifying again immediately, waking up on-call
+engineers for issues they already knew about and had deliberately silenced.
+
+With the PVC: silences are written to disk, survive restarts, and remain
+active exactly as configured regardless of how many times the pod restarts.
+
+#### How Prometheus Scrapes — Pod IP vs Service ClusterIP
+
+This is one of the most frequently misunderstood aspects of Prometheus on Kubernetes.
+
+```
+Prometheus always scrapes POD IPs directly — never the Service ClusterIP.
+
+How it works:
+  1. You create a ServiceMonitor pointing at Service "order-api" in namespace "orders"
+  2. The Prometheus Operator reads the ServiceMonitor
+  3. Operator queries the Kubernetes ENDPOINTS API for "order-api" in "orders"
+     (not the Service API — the Endpoints API)
+  4. The Endpoints object contains the actual pod IPs behind the Service:
+       {
+         "subsets": [{
+           "addresses": [
+             {"ip": "10.244.0.12", "targetRef": {"name": "order-api-abc"}},
+             {"ip": "10.244.0.13", "targetRef": {"name": "order-api-def"}},
+             {"ip": "10.244.0.14", "targetRef": {"name": "order-api-ghi"}}
+           ],
+           "ports": [{"name": "metrics", "port": 9797}]
+         }]
+       }
+  5. Prometheus generates three scrape targets — one per pod IP:
+       http://10.244.0.12:9797/metrics
+       http://10.244.0.13:9797/metrics
+       http://10.244.0.14:9797/metrics
+  6. Prometheus scrapes each pod IP directly every 15 seconds
+
+Why pod IPs and not the Service ClusterIP (e.g. 10.100.1.50)?
+  If Prometheus scraped the ClusterIP, kube-proxy would load-balance each
+  scrape to a random pod. You would get:
+    Scrape 1 → pod A metrics
+    Scrape 2 → pod B metrics  (different pod!)
+    Scrape 3 → pod A metrics again
+  This produces mixed, inconsistent time series — unusable for per-pod metrics.
+
+  By scraping pod IPs directly:
+    Scrape 1 → pod A metrics (always pod A)
+    Scrape 2 → pod A metrics (always pod A)
+    You get a consistent, continuous time series per pod ✅
+```
+
+---
+
+### Step 5: Install kube-prometheus-stack
 
 ```bash
 helm install kube-prometheus-stack \
   prometheus-community/kube-prometheus-stack \
-  --version 84.5.0 \
+  --version 84.5.0 \        # pin exact chart version — never omit this
   --namespace monitoring \
   --values src/values.yaml \
   --wait \
@@ -1308,7 +1959,10 @@ kubectl get pvc -n monitoring
 Expected:
 ```
 NAME                                                              STATUS   CAPACITY
-alertmanager-kube-prometheus-stack-alertmanager-db-...-0          Bound    1Gi
+alertmanager-kube-prometheus-stack-alertmanager-db-...-0          Bound  
+1Gi
+kube-prometheus-stack-grafana                                     Bound
+1Gi
 prometheus-kube-prometheus-stack-prometheus-db-...-0              Bound    10Gi
 ```
 
@@ -1321,7 +1975,11 @@ kubectl get storageclass
 
 ---
 
-## Step 6: Access the Prometheus UI and Explore
+
+
+## Part B — Exploration
+
+### Step 6: Access the Prometheus UI and Explore
 
 Open a port-forward to the Prometheus Service:
 
@@ -1334,36 +1992,103 @@ kubectl port-forward \
 
 Open [http://localhost:9090](http://localhost:9090) in your browser.
 
-### Status → Targets
+#### Status → Target health
 
 ```
 http://localhost:9090/targets
 ```
 
-This page shows every target Prometheus is currently scraping.
-All should show state **UP** (green):
+Or use the CLI (useful during incidents when you prefer the terminal):
 
-```
-Discovered and scraped by kube-prometheus-stack:
-────────────────────────────────────────────────────────────────
-monitoring/kube-prometheus-stack-alertmanager/0       (1/1 up)
-monitoring/kube-prometheus-stack-apiserver/0          (1/1 up)
-monitoring/kube-prometheus-stack-coredns/0            (1/1 up)
-monitoring/kube-prometheus-stack-grafana/0            (1/1 up)
-monitoring/kube-prometheus-stack-kube-state-metrics/0 (1/1 up)
-monitoring/kube-prometheus-stack-kubelet/0            (1/1 up)
-monitoring/kube-prometheus-stack-node-exporter/0      (1/1 up)
-monitoring/kube-prometheus-stack-operator/0           (1/1 up)
-monitoring/kube-prometheus-stack-prometheus/0         (1/1 up)  ← self-monitoring
+```bash
+# List all targets with job name, health, and scrape URL
+curl -s localhost:9090/api/v1/targets \
+  | jq '.data.activeTargets[] | {job: .labels.job, health: .health, scrapeUrl: .scrapeUrl}'
+
+# List only DOWN targets (quick health check)
+curl -s localhost:9090/api/v1/targets \
+  | jq '[.data.activeTargets[] | select(.health=="down") | {job: .labels.job, error: .lastError}]'
 ```
 
-**Why are all these targets already discovered without any config you wrote?**
+**Actual output on Minikube (chart 84.5.0) — what you will see:**
+
+```
+job: kube-prometheus-stack-alertmanager      health: up
+job: kube-prometheus-stack-alertmanager      health: up    (port 8080 — self-metrics)
+job: apiserver                               health: up
+job: coredns                                 health: up
+job: kube-prometheus-stack-grafana           health: up
+job: kube-state-metrics                      health: up
+job: kubelet                                 health: up    (port 10250)
+job: kubelet                                 health: up    (cadvisor)
+job: kubelet                                 health: up    (probes)
+job: kube-prometheus-stack-operator          health: up
+job: node-exporter                           health: up
+job: kube-prometheus-stack-prometheus        health: up    (port 9090)
+job: kube-prometheus-stack-prometheus        health: up    (port 8080 — self-metrics)
+job: kube-controller-manager                 health: down  ← expected on Minikube ⚠️
+job: kube-etcd                               health: down  ← expected on Minikube ⚠️
+job: kube-scheduler                          health: down  ← expected on Minikube ⚠️
+```
+
+**⚠️  Known Issue: Three Control Plane Targets DOWN on Minikube**
+
+```
+Affected targets:
+  kube-controller-manager  https://192.168.76.2:10257/metrics
+  kube-etcd                http://192.168.76.2:2381/metrics
+  kube-scheduler           https://192.168.76.2:10259/metrics
+
+Root cause:
+  On Minikube, these control plane components bind their metrics ports to
+  127.0.0.1 (localhost on the Minikube VM) by default. Prometheus runs
+  inside a pod and cannot reach 127.0.0.1 on the host node. From Prometheus's
+  network namespace, 127.0.0.1 refers to the pod itself — not the node.
+
+  This is Minikube-specific behaviour. On managed clusters (EKS, GKE, AKS)
+  the control plane is managed by the cloud provider and these targets are
+  either not exposed or handled differently.
+
+Fix (optional — apply if you want complete coverage):
+  SSH into the Minikube node and patch the static pod manifests:
+
+  # Fix kube-scheduler bind address
+  minikube ssh "sudo sed -i \
+    's/--bind-address=127.0.0.1/--bind-address=0.0.0.0/' \
+    /etc/kubernetes/manifests/kube-scheduler.yaml"
+
+  # Fix kube-controller-manager bind address
+  minikube ssh "sudo sed -i \
+    's/--bind-address=127.0.0.1/--bind-address=0.0.0.0/' \
+    /etc/kubernetes/manifests/kube-controller-manager.yaml"
+
+  # Fix kube-etcd listen-metrics-urls
+  minikube ssh "sudo sed -i \
+    's|--listen-metrics-urls=http://127.0.0.1:2381|--listen-metrics-urls=http://0.0.0.0:2381|' \
+    /etc/kubernetes/manifests/etcd.yaml"
+
+  # Wait 60 seconds for static pods to restart, then verify
+  curl -s localhost:9090/api/v1/targets \
+    | jq '[.data.activeTargets[] | select(.health=="down") | .labels.job]'
+  # Expected after fix: [] (empty array — all targets up)
+
+Impact of leaving them DOWN for this demo series:
+  ✅ No impact — all 25 demos work correctly without these three targets
+  ✅ Prometheus, Grafana, Alertmanager, Node Exporter, kube-state-metrics unaffected
+  ℹ️  kube-controller-manager, etcd, kube-scheduler metrics simply unavailable
+```
+
+**Why are all other targets already discovered without any config you wrote?**
 
 The chart ships with ServiceMonitor CRDs for every component it installs.
 The Prometheus Operator read those CRDs on startup and generated
 `prometheus.yaml` scrape jobs automatically. This is the Operator pattern in action.
 
-**Targets page columns explained:**
+**`Status → Target health` page columns explained:**
+
+![alt text](images/image.png)
+
+![alt text](images/image-1.png)
 
 ```
 Endpoint    → the URL being scraped (http://10.244.0.x:9100/metrics)
@@ -1377,27 +2102,64 @@ Error       → error message if DOWN (connection refused, timeout, 404, etc.)
 Click any **Endpoint URL** to open the raw `/metrics` page in your browser
 and see the OpenMetrics text format directly.
 
-### Status → Service Discovery
+#### Status → Service Discovery
 
 ```
 http://localhost:9090/service-discovery
 ```
+
+Or via CLI:
+```bash
+# List all discovered endpoints and their relabeling state
+curl -s localhost:9090/api/v1/targets/metadata   | jq '[.data[] | {metric: .metric, target: .target}] | group_by(.target) | length'
+
+# More useful: Check if a specific namespace is being discovered
+curl -s localhost:9090/api/v1/targets \
+  | jq '[.data.activeTargets[] | select(.labels.namespace=="default") | .labels.job]'
+```
+![alt text](images/image-2.png)
+
+![alt text](images/image-3.png)
 
 Shows every Kubernetes endpoint Prometheus is aware of — including endpoints
 it chose not to scrape (filtered by relabeling rules). This page is essential
 for debugging "why isn't my service being scraped?" — you can see whether
 Prometheus found the endpoint but dropped it, versus never finding it at all.
 
-### Status → TSDB Status
+**Service Discovery page columns explained:**
+```
+  Discovered labels  → raw Kubernetes API metadata with __ prefix.
+                       These are NOT stored on metrics — they are inputs to relabeling.
+                       Example: __meta_kubernetes_pod_name="test-app-abc"
+  Target labels      → labels that will appear on scraped metrics after relabeling.
+                       Example: pod="test-app-abc", job="default/test-app/0"
+  Show Relabeling    → expands the full list of relabeling rules applied to this target.
+                       Shows how discovered labels are transformed into target labels.
+                       Essential for debugging "why does my metric have this label value?"
+```
+
+#### Status → TSDB Status
 
 ```
 http://localhost:9090/tsdb-status
 ```
 
+Or via CLI:
+```bash
+# Get current head series count (cardinality) directly
+curl -s 'localhost:9090/api/v1/query?query=prometheus_tsdb_head_series' \
+  | jq '.data.result[0].value[1]'
+
+# Get top 10 metrics by series count (cardinality audit)
+curl -s 'localhost:9090/api/v1/query?query=topk(10,count+by+(__name__)({__name__%3D~".%2B"}))' \
+  | jq '[.data.result[] | {metric: .metric.__name__, series: .value[1]}]'
+```
+![alt text](images/image-4.png)
+
 ```
 Important fields to check:
-  Head Series:    ~15,000 – 40,000    ← total active time series (cardinality)
-  Head Chunks:    [count]             ← number of in-memory chunk objects
+  Head Series:    33900               ← total active time series (cardinality)
+  Head Chunks:    100920              ← number of in-memory chunk objects
 
 Top 10 metric names by series count:
   Tells you which metrics contribute most to cardinality.
@@ -1413,7 +2175,7 @@ If it grows faster than your workload grows, a cardinality bomb was introduced.
 
 ---
 
-## Step 7: Read a Raw /metrics Endpoint
+### Step 7: Read a Raw /metrics Endpoint
 
 Every target exposes metrics in OpenMetrics text format. Knowing how to read
 this format is fundamental — every Prometheus client library in every language
@@ -1432,8 +2194,14 @@ kubectl port-forward -n monitoring pod/$NODE_POD 9100:9100 &
 PF_PID=$!
 sleep 2
 
-# Fetch a sample of the /metrics output
-curl -s http://localhost:9100/metrics | grep -E "^(#|node_cpu|node_memory|node_filesystem)" | head -50
+# Verify you are connected to Node Exporter (should show node_exporter in output)
+curl -s http://localhost:9100/metrics | grep "^# HELP node_" | head -5
+
+# Fetch node CPU, memory, and filesystem metrics
+curl -s http://localhost:9100/metrics | grep -E "^node_(cpu|memory|filesystem)" | head -30
+
+# Count total metrics exposed (healthy Node Exporter: 800-1200 lines)
+curl -s http://localhost:9100/metrics | grep -v "^#" | wc -l
 ```
 
 **Expected output:**
@@ -1482,12 +2250,15 @@ kill $PF_PID && wait $PF_PID 2>/dev/null
 
 ---
 
-## Step 8: Your First PromQL Queries
+
+## Part C — First Queries
+
+### Step 8: Your First PromQL Queries
 
 Keep Prometheus UI open at `http://localhost:9090`. Click **Graph** tab.
 Run each query and understand what it returns before moving to the next.
 
-### Query 1 — Are all targets up?
+#### Query 1 — Are all targets up?
 
 ```promql
 up
@@ -1507,8 +2278,9 @@ You wrote no code for it. Every scrape target gets one:
 In production: alert on up == 0 for any critical target.
 alert: rule — expr: up{job="order-api"} == 0 for: 1m
 ```
+![alt text](images/image-5.png)
 
-### Query 2 — CPU busy percentage
+#### Query 2 — CPU busy percentage
 
 ```promql
 100 - (
@@ -1542,13 +2314,13 @@ Step-by-step breakdown:
    Invert: idle% → busy%
 
 Expected on a lightly loaded Minikube: 5–15% busy
-Expected during stress test (Step 10): 80–99% busy
+Expected during stress test (Step 11): 80–99% busy
 
 Why [5m]? Range must be ≥ 4 × scrape_interval for statistical reliability.
   4 × 15s = 60s minimum. [5m] = 20 data points — standard safe default.
 ```
 
-### Query 3 — Memory usage percentage (gauge query)
+#### Query 3 — Memory usage percentage (gauge query)
 
 ```promql
 (
@@ -1571,7 +2343,7 @@ No rate() or increase() — gauges are queried directly.
 Expected on 8GB Minikube with the full stack: 55–75%
 ```
 
-### Query 4 — Pod count by namespace (Kubernetes state query)
+#### Query 4 — Pod count by namespace (Kubernetes state query)
 
 ```promql
 count by (namespace) (kube_pod_info)
@@ -1591,38 +2363,60 @@ This is a capacity planning query:
 Track over time to spot namespace growth patterns before hitting quota limits.
 ```
 
-### Query 5 — HTTP error rate (Golden Signal: Errors)
+#### Query 5 — HTTP error rate (Golden Signal: Errors)
 
-Run this after generating traffic in Step 9:
+Run this after deploying the test-app in Step 9 and generating 5xx traffic.
+**Empty result is expected and correct** if no 5xx errors have occurred yet.
 
 ```promql
 sum(
-  rate(http_requests_total{namespace="default", status=~"5.."}[5m])
+  rate(
+    http_requests_total{
+      job="test-app",
+      status=~"5.."
+    }[5m]
+  )
 )
 /
 sum(
-  rate(http_requests_total{namespace="default"}[5m])
+  rate(
+    http_requests_total{
+      job="test-app"
+    }[5m]
+  )
 )
 ```
 
 ```
-Numerator:   rate of HTTP 500-599 (server error) requests
-Denominator: rate of all HTTP requests
+Numerator:   rate of HTTP 500-599 (server error) requests per second
+Denominator: rate of ALL HTTP requests per second
+Result:      fraction of requests that are server errors
 
-Result: fraction of requests that are server errors
-  0.0  = 0% errors (healthy)
-  0.05 = 5% error rate (SLO breach — investigate immediately)
+  (no data) = no 5xx errors yet — generate some first (see below)
+  0.0       = 0% errors (no errors in the last 5 minutes)
+  0.024     = 2.4% error rate
+  0.05      = 5% error rate — SLO breach, investigate immediately
 
-status=~"5.." — regex match for any 5xx status code
+status=~"5.." — RE2 fully-anchored regex matching 500, 501, 502, 503, 504
 =~  means regex match in Prometheus label selectors
 
-This is the Errors golden signal in PromQL.
-Set an alert: expr: error_rate > 0.01 for: 2m (99% success SLO)
-```
+PromQL does not return 0 for absent metrics — it returns no data at all.
+This is intentional: a counter that never incremented has no time series.
 
+To generate 5xx errors and see this query return data:
+  kubectl port-forward svc/test-app 8080:9898 &
+  for i in $(seq 1 5); do curl -s http://localhost:8080/status/500 > /dev/null; done
+  # Wait 15 seconds then re-run the query above
+
+Alert: <above query> > 0.01 for: 2m
+  (page on-call if error rate exceeds 1% for 2 continuous minutes)
+```
 ---
 
-## Step 9: Deploy a Test Application with Auto-Discovery
+
+## Part D — Test Application and Golden Signals
+
+### Step 9: Deploy a Test Application with Auto-Discovery
 
 Deploy a realistic test application and observe the complete self-service flow:
 application deployed → ServiceMonitor created → Prometheus discovers it automatically.
@@ -1634,10 +2428,12 @@ pre-instrumented with Prometheus metrics, structured logs, and OpenTelemetry tra
 It is used across CNCF project demos, Flux documentation, and Kubernetes tutorials.
 It is not a toy — it represents what a properly instrumented production service looks like.
 
-### Create `src/test-app/deployment.yaml`
+#### Create `src/test-app/01-deployment.yaml`
+
+**src/test-app/01-deployment.yaml:**
 
 ```yaml
-# src/test-app/deployment.yaml
+# src/test-app/01-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -1647,7 +2443,7 @@ metadata:
     app: test-app
     version: "6.7.1"
 spec:
-  replicas: 3 # 3 replicas so we can observe per-pod metrics
+  replicas: 3     # 3 replicas so we can observe per-pod metrics
   selector:
     matchLabels:
       app: test-app
@@ -1661,16 +2457,21 @@ spec:
         - name: test-app
           image: ghcr.io/stefanprodan/podinfo:6.7.1
           ports:
-            - name: http # HTTP API port
+            - name: http           # HTTP API port
               containerPort: 9898
-            - name: http-metrics # Prometheus /metrics port
+            - name: http-metrics   # Prometheus /metrics port
               containerPort: 9797
-            - name: grpc # gRPC port
+            - name: grpc           # gRPC port
               containerPort: 9999
           env:
             - name: PODINFO_UI_MESSAGE
               value: "Hello from Observability Demo 01"
-            - name: PODINFO_PORT_METRICS # ← this is the only addition
+
+            # REQUIRED: tells podinfo to expose /metrics on a dedicated port 9797.
+            # Without this, podinfo does not listen on port 9797 and the
+            # ServiceMonitor scrape fails with "connection refused".
+            # Always set PODINFO_PORT_METRICS when using a separate metrics port.
+            - name: PODINFO_PORT_METRICS
               value: "9797"
           resources:
             requests:
@@ -1697,10 +2498,12 @@ spec:
             successThreshold: 1
 ```
 
-### Create `src/test-app/service.yaml`
+#### Create `src/test-app/02-service.yaml`
+
+**src/test-app/02-service.yaml:**
 
 ```yaml
-# src/test-app/service.yaml
+# src/test-app/02-service.yaml
 apiVersion: v1
 kind: Service
 metadata:
@@ -1721,10 +2524,12 @@ spec:
       targetPort: 9797
 ```
 
-### Create `src/test-app/servicemonitor.yaml`
+#### Create `src/test-app/03-servicemonitor.yaml`
+
+**src/test-app/03-servicemonitor.yaml:**
 
 ```yaml
-# src/test-app/servicemonitor.yaml
+# src/test-app/03-servicemonitor.yaml
 #
 # ServiceMonitor is a CRD installed by the Prometheus Operator.
 # When you apply this manifest, the Operator will:
@@ -1746,11 +2551,11 @@ spec:
   # Select the Service to monitor by matching its labels
   selector:
     matchLabels:
-      app: test-app         # matches the Service in service.yaml
+      app: test-app         # matches the Service in 02-service.yaml
 
   # Where to find /metrics on the matched Service
   endpoints:
-    - port: http-metrics    # named port from service.yaml (not port number)
+    - port: http-metrics    # named port from 02-service.yaml (not port number)
       path: /metrics        # the path Prometheus will GET
       interval: 15s         # how often to scrape
       scrapeTimeout: 10s    # timeout per scrape — must be less than interval
@@ -1761,12 +2566,99 @@ spec:
       - default
 ```
 
+#### Understanding 03-servicemonitor.yaml — Parameters Explained
+
+```yaml
+# spec.selector.matchLabels
+# Finds the Kubernetes Service by label. Must match labels on 02-service.yaml.
+# If no Service matches: the ServiceMonitor exists but selects zero endpoints.
+# Debug: kubectl get service -n default -l app=test-app
+selector:
+  matchLabels:
+    app: test-app
+
+# spec.endpoints[].port
+# References the NAMED port from 02-service.yaml spec.ports[].name — NOT the
+# port number. Named ports make configs resilient: if you change port 9797
+# to 8080 in 02-service.yaml, the ServiceMonitor still works without changes.
+# Tip: always name your Service ports and reference by name here.
+endpoints:
+  - port: http-metrics      # must exactly match 02-service.yaml port name
+
+# spec.endpoints[].path
+# The URL path Prometheus scrapes. Default is /metrics.
+# Only change if your app exposes metrics at a different path.
+    path: /metrics
+
+# spec.endpoints[].interval
+# Overrides the global scrapeInterval for this specific endpoint.
+# Useful for high-cardinality exporters (scrape less often) or
+# time-critical services (scrape more often).
+    interval: 15s
+
+# spec.endpoints[].scrapeTimeout
+# How long Prometheus waits for a response before marking scrape failed.
+# Must be strictly less than interval. Default: 10s.
+# Increase for slow exporters (e.g. complex SQL queries for a DB exporter).
+    scrapeTimeout: 10s
+
+# spec.namespaceSelector
+# Which namespaces to look in for Services matching spec.selector.
+# matchNames: [default]   → only look in the 'default' namespace
+# {}                      → look in ALL namespaces (use with care)
+# Omitting this field:    → looks only in the ServiceMonitor's own namespace
+namespaceSelector:
+  matchNames:
+    - default
+
+# spec.targetLabels
+# Labels from the matched Service that are added to every scraped metric.
+# app=test-app from the Service becomes app="test-app" on all metrics.
+# Use this to add team, environment, or tier labels from Service metadata.
+targetLabels:
+  - app
+
+# spec.endpoints[].honorLabels
+# Default: false. When false: Prometheus overwrites conflicting labels
+# from the target with its own (e.g. the 'job' label).
+# Set true ONLY for Pushgateway — it needs to preserve pushed labels.
+# For all other targets: leave false (the default).
+# honorLabels: false  ← not set, defaults to false (correct)
+
+# spec.endpoints[].metricRelabelings
+# Applied to scraped metrics BEFORE storing in TSDB.
+# Use to: drop high-cardinality metrics, rename labels, filter metrics.
+# Example: drop Go runtime metrics to reduce cardinality:
+# metricRelabelings:
+#   - sourceLabels: [__name__]
+#     regex: 'go_.*'
+#     action: drop
+```
+
+**How Prometheus discovers the pods via this ServiceMonitor:**
+
+```
+ServiceMonitor spec.selector → finds Service "test-app" in namespace "default"
+Service "test-app"           → has Endpoints object with 3 pod IPs
+Prometheus Operator          → reads Endpoints: [10.244.0.x:9797, 10.244.0.y:9797, 10.244.0.z:9797]
+Generated scrape config      → 3 separate scrape targets (one per pod IP)
+Prometheus                   → scrapes each pod directly every 15s
+
+Why pod IPs not the Service ClusterIP? See "How Prometheus Scrapes" in the
+values.yaml section above — short answer: pod IPs give per-pod metrics;
+the Service VIP would load-balance scrapes across pods randomly.
+```
+
+> **Hands-on for other CRDs (PodMonitor, PrometheusRule, AlertmanagerConfig):**
+> These are covered in detail with full hands-on labs in **Demo 11 — Prometheus
+> Operator CRDs in Depth**.
+
 Deploy:
 
 ```bash
-kubectl apply -f src/test-app/deployment.yaml
-kubectl apply -f src/test-app/service.yaml
-kubectl apply -f src/test-app/servicemonitor.yaml
+kubectl apply -f src/test-app/01-deployment.yaml
+kubectl apply -f src/test-app/02-service.yaml
+kubectl apply -f src/test-app/03-servicemonitor.yaml
 
 kubectl rollout status deployment/test-app
 ```
@@ -1775,6 +2667,12 @@ Expected output:
 ```
 deployment.apps/test-app successfully rolled out
 ```
+> **Hands-on for other CRDs:** This demo covers `ServiceMonitor` in depth.
+> Full hands-on labs for `PodMonitor`, `PrometheusRule`, `AlertmanagerConfig`,
+> and `ScrapeConfig` are covered in **Demo 11 — Prometheus Operator CRDs**.
+> The Prometheus Operator deep dive (how it watches, reconciles, and generates
+> config for every CRD type) is in the
+> [Kube-Prometheus-Stack-Guide](./Kube-Prometheus-Stack-Guide.md) — Section 6.
 
 Verify all 3 pods are running:
 
@@ -1790,43 +2688,247 @@ test-app-6d8b4f9c4-def34    1/1     Running   0          45s
 test-app-6d8b4f9c4-ghi56    1/1     Running   0          45s
 ```
 
-**Wait 30–60 seconds**, then check the Prometheus Targets page:
+**Wait 30–60 seconds**, then verify Prometheus discovered the test-app:
 
+```bash
+# CLI: check test-app targets are UP (faster than opening the browser)
+curl -s localhost:9090/api/v1/targets \
+  | jq '[.data.activeTargets[] | select(.labels.job | test("test-app")) | {job: .labels.job, pod: .labels.pod, health: .health}]'
+```
+
+Expected output:
+```json
+[
+  {"job": "serviceMonitor/default/test-app/0", "pod": "test-app-xxx-aaa", "health": "up"},
+  {"job": "serviceMonitor/default/test-app/0", "pod": "test-app-xxx-bbb", "health": "up"},
+  {"job": "serviceMonitor/default/test-app/0", "pod": "test-app-xxx-ccc", "health": "up"}
+]
+```
+
+Or use the Prometheus UI:
 ```
 http://localhost:9090/targets
 ```
+Look for: `serviceMonitor/default/test-app/0 (3/3 up)`
 
-You should see a new entry auto-discovered:
-```
-default/test-app/0 (3/3 up)   ← all 3 pod replicas discovered and scraping
-```
+![alt text](images/image-6.png)
 
 No prometheus.yaml was edited. No Prometheus was restarted. The Operator did it.
 
-Generate traffic so the test-app metrics have real data:
+**Verify test-app metrics are being collected:**
 
 ```bash
-# Port-forward to the app HTTP API
+# Check how many metrics the test-app is exposing
+curl -s 'localhost:9090/api/v1/query?query=count({job%3D~"serviceMonitor%2Fdefault%2Ftest-app%2F.*"})'   | jq '.data.result[0].value[1]'
+
+# Check Prometheus is scraping successfully (should be recent timestamp)
+curl -s 'localhost:9090/api/v1/query?query=up{job%3D~"serviceMonitor%2Fdefault%2Ftest-app%2F.*"}' \
+  | jq '[.data.result[] | {pod: .metric.pod, up: .value[1]}]'
+
+# List available test-app metric names
+curl -s 'localhost:9090/api/v1/label/__name__/values'   | jq '[.data[] | select(startswith("http_") or startswith("go_") or startswith("process_"))] | length'
+```
+---
+
+### Step 10: The Four Golden Signals — Applied PromQL Queries
+
+The test-app is running and being scraped. Before generating load (Step 11),
+run these four golden signal queries to establish a baseline and understand
+what each measures. All queries use the `serviceMonitor/default/test-app/0`
+job name format that chart 84.5.0 generates.
+
+> **Note on empty results:** If a query returns no data, the metric has not
+> been observed yet (e.g. no 5xx errors = no error rate series exists).
+> This is correct PromQL behaviour — an absent counter means zero events.
+> Generate traffic in the next step and re-run the queries to see live data.
+
+**First — generate some baseline traffic:**
+
+```bash
 kubectl port-forward svc/test-app 8080:9898 &
 APP_PF=$!
 sleep 2
 
-# Send 200 requests across two endpoints
+# Normal traffic
 for i in $(seq 1 100); do
   curl -s http://localhost:8080/api/info > /dev/null
   curl -s http://localhost:8080/version > /dev/null
+done
+
+# Generate some 5xx errors so the error rate query returns data
+for i in $(seq 1 5); do
+  curl -s http://localhost:8080/status/500 > /dev/null
 done
 
 echo "Traffic generated"
 kill $APP_PF 2>/dev/null && wait $APP_PF 2>/dev/null
 ```
 
-Now run the four golden signal queries from Step 8 in Prometheus UI.
-You will see real data from the test-app.
+Wait 30 seconds for Prometheus to scrape the new data, then run the queries.
 
 ---
 
-## Step 10: Simulate CPU Load — Watch Metrics React in Real Time
+#### Golden Signal 1 — LATENCY (p99 request duration)
+
+**What it answers:** "How long are 99% of requests taking?"
+
+```promql
+histogram_quantile(
+  0.99,
+  sum by (le) (
+    rate(
+      http_request_duration_seconds_bucket{
+        job=~"test-app"
+      }[5m]
+    )
+  )
+)
+```
+
+**Explanation:**
+- `http_request_duration_seconds_bucket` — the histogram _bucket series from podinfo.
+  Each bucket counts how many requests completed within a given duration threshold (`le`).
+- `rate(...[5m])` — converts cumulative bucket counts to per-second rates over 5 minutes.
+  Required because raw histograms are counters (always increasing). We need the rate of
+  new observations, not the total since startup.
+- `sum by (le)` — aggregates across all 3 pods, keeping the `le` bucket label.
+  Must keep `le` — histogram_quantile reads it to find bucket boundaries.
+- `histogram_quantile(0.99, ...)` — interpolates between bucket boundaries to estimate
+  the value below which 99% of all request durations fall.
+
+**Expected result:** `0.01` to `0.05` (10ms to 50ms p99 under light load).
+**Alert threshold:** `> 0.5` means 99% of requests take more than 500ms — SLO breach.
+
+**CLI alternative:**
+```bash
+curl -sg 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.99,sum+by+(le)(rate(http_request_duration_seconds_bucket%7Bjob%3D~"serviceMonitor%2Fdefault%2Ftest-app%2F.*"%7D%5B5m%5D)))'   | jq '.data.result[0].value[1]'
+```
+
+---
+
+#### Golden Signal 2 — TRAFFIC (requests per second)
+
+**What it answers:** "How many requests per second is the app receiving?"
+
+```promql
+sum(
+  rate(
+    http_requests_total{
+      job=~"test-app"
+    }[5m]
+  )
+)
+```
+
+**Explanation:**
+- `http_requests_total` — a counter that increments on every HTTP request.
+  Raw value is useless (always increasing). Must use `rate()`.
+- `rate(...[5m])` — calculates per-second rate of new requests over 5 minutes.
+  Handles counter resets (pod restarts) automatically.
+- `sum(...)` — adds up the request rates across all 3 pods to get total RPS.
+  Without `sum`: you get one rate per pod. With `sum`: total platform throughput.
+
+**Expected result:** `1` to `5` req/s after the traffic generation above.
+**Use for:** capacity planning ("at what RPS do we need to scale?"), anomaly detection
+("traffic dropped to 0 — deployment broken?"), and SLO calculations.
+
+**CLI alternative:**
+```bash
+curl -sg 'http://localhost:9090/api/v1/query?query=sum(rate(http_requests_total%7Bjob%3D~"serviceMonitor%2Fdefault%2Ftest-app%2F.*"%7D%5B5m%5D))'   | jq '.data.result[0].value[1]'
+```
+
+---
+
+#### Golden Signal 3 — ERRORS (error rate as fraction)
+
+**What it answers:** "What fraction of requests are failing with server errors?"
+
+```promql
+sum(
+  rate(
+    http_requests_total{
+      job=~"test-app",
+      status=~"5.."
+    }[5m]
+  )
+)
+/
+sum(
+  rate(
+    http_requests_total{
+      job=~"test-app"
+    }[5m]
+  )
+)
+```
+
+**Explanation:**
+- Numerator: rate of requests with 5xx status codes (server errors).
+  `status=~"5.."` — regex matches 500, 501, 502, 503, 504. The `=~` operator
+  uses RE2 regex which is fully anchored — "5.." means exactly 3 chars starting with 5.
+- Denominator: rate of ALL requests regardless of status.
+- Division gives the fraction: `0.0` = no errors, `0.05` = 5% error rate.
+
+**Expected result:** A small fraction (e.g. `0.024`) if you sent 5 errors out of ~210 requests.
+**Empty result is correct** if no 5xx requests were made — the counter never incremented
+so the time series does not exist yet. Run the error-generating curl commands above first.
+
+**Alert threshold:** `> 0.01` means > 1% error rate — typical SLO breach threshold.
+
+**CLI alternative:**
+```bash
+curl -sg 'http://localhost:9090/api/v1/query?query=sum(rate(http_requests_total%7Bjob%3D~"serviceMonitor%2Fdefault%2Ftest-app%2F.*",status%3D~"5.."%7D%5B5m%5D))%2Fsum(rate(http_requests_total%7Bjob%3D~"serviceMonitor%2Fdefault%2Ftest-app%2F.*"%7D%5B5m%5D))'   | jq '.data.result[0].value[1]'
+```
+
+---
+
+#### Golden Signal 4 — SATURATION (memory as fraction of limit)
+
+**What it answers:** "How close is the app to its memory limit?"
+
+```promql
+process_resident_memory_bytes{
+  job=~"test-app"
+}
+/ (64 * 1024 * 1024)
+```
+
+**Explanation:**
+- `process_resident_memory_bytes` — a gauge: actual RSS (Resident Set Size) memory
+  used by the process right now. Comes from the Go runtime (`/proc/<pid>/status`).
+  This is a gauge — query directly, no `rate()` needed.
+- `/ (64 * 1024 * 1024)` — divides by the memory limit set in 01-deployment.yaml
+  (64Mi = 67,108,864 bytes). Result is a fraction from 0 to 1+.
+  `0.3` = 30% of limit used. `1.0` = at limit. `>1.0` = OOMKill territory.
+
+**Expected result:** `0.2` to `0.5` (20-50% of the 64Mi limit under light load).
+**Alert threshold:** `> 0.85` means within 15% of OOMKill — act now.
+
+**Per-pod view (see each pod's saturation separately):**
+```promql
+process_resident_memory_bytes{
+  job="test-app"
+}
+/ (64 * 1024 * 1024)
+```
+Without `sum()`, this returns one value per pod — useful for identifying
+one outlier pod with a memory leak vs the rest being healthy.
+
+**CLI alternative:**
+```bash
+curl -sg 'http://localhost:9090/api/v1/query?query=process_resident_memory_bytes%7Bjob%3D~"serviceMonitor%2Fdefault%2Ftest-app%2F.*"%7D%2F(64*1024*1024)'   | jq '[.data.result[] | {pod: .metric.pod, memory_fraction: .value[1]}]'
+```
+
+---
+
+**Switch to Graph view** in the Prometheus UI for any of these queries to
+see the values as a time series over the last 15 minutes.
+In Demo 04 (Grafana Dashboards), these four queries become the foundation
+of your first operational dashboard with proper visualisations.
+
+---
+
+### Step 11: Simulate CPU Load — Watch Metrics React in Real Time
 
 Use `stress-ng` to generate realistic CPU load and observe Prometheus metrics
 responding to the workload in real time.
@@ -1895,7 +2997,7 @@ kubectl delete pod stress-test
 
 ---
 
-## Step 11: Validate Configuration with promtool
+### Step 12: Validate Configuration with promtool
 
 `promtool` is the official Prometheus CLI. Use it in CI/CD pipelines to validate
 configuration files and rule files before they are applied to production.
@@ -1916,23 +3018,44 @@ kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   promtool check config /etc/prometheus/config_out/prometheus.env.yaml
 ```
 
-Expected:
+Expected output — you may see a warning about a duplicate rule:
 ```
 Checking /etc/prometheus/config_out/prometheus.env.yaml
   SUCCESS: X rule files found
+
+  FAILED:
+  lint error 1 duplicate rule(s) found.
+  Metric: code_verb:apiserver_request_total:increase1h
 ```
+
+**This warning is a known issue in kube-prometheus-stack bundled rules** —
+not a problem with your setup. The duplicate `code_verb:apiserver_request_total:increase1h`
+recording rule is present in the chart-bundled PrometheusRule files and has been
+reported upstream. It is a **lint warning only** — Prometheus loads all rules
+successfully despite the duplicate. The warning does not affect any functionality.
+
+Your own rules (created in Demo 02 and later) will pass promtool cleanly.
+Check the kube-prometheus-stack GitHub issues for the current fix status:
+`github.com/prometheus-community/helm-charts/issues`
+
+
+**Why prometheus.env.yaml and not prometheus.yaml?**
+The Prometheus Operator generates the scrape config and writes it to a Kubernetes Secret, mounted at /etc/prometheus/config_out/prometheus.env.yaml. The .env suffix signals: this is generated (environment-specific), not hand-written. The path is set by the --config.file flag in the Prometheus container spec. Never edit this file directly — the Operator overwrites it on every reconciliation.
 
 **View the auto-generated scrape job for the test-app:**
 
 ```bash
+# In chart 84.5.0 the job name format changed to:
+# serviceMonitor/<namespace>/<name>/<endpoint-index>
+# NOT the old format: <namespace>/<name>/<index>
 kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   cat /etc/prometheus/config_out/prometheus.env.yaml \
-  | grep -A 12 "job_name: default/test-app"
+  | grep -A 12 "job_name: serviceMonitor/default/test-app"
 ```
 
 Expected output — generated by the Operator from your ServiceMonitor CRD:
 ```yaml
-- job_name: default/test-app/0
+- job_name: serviceMonitor/default/test-app/0
   honor_timestamps: true
   scrape_interval: 15s
   scrape_timeout: 10s
@@ -1945,6 +3068,13 @@ Expected output — generated by the Operator from your ServiceMonitor CRD:
       - default
 ```
 
+> **Chart 84.5.0 job name format change:** The Prometheus Operator v0.90.x
+> changed the generated job_name format from `<namespace>/<name>/<index>`
+> to `serviceMonitor/<namespace>/<name>/<index>`. If you see empty output
+> with the old format grep, use the new format above. All PromQL queries
+> in this demo series use `job=~"test-app"` to
+> match correctly with chart 84.5.0.
+
 **Count total scrape jobs currently configured:**
 
 ```bash
@@ -1953,8 +3083,10 @@ kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   | grep "^- job_name:" | wc -l
 ```
 
-Expected: approximately 12–15 jobs. Every job corresponds to one ServiceMonitor.
-None of these were written manually — the Operator generated them all.
+Expected: approximately 15–17 jobs (matches your actual output of 17).
+Every job corresponds to one ServiceMonitor CRD — none written manually.
+
+
 
 **Run TSDB analysis to check cardinality:**
 
@@ -1963,211 +3095,344 @@ kubectl exec -n monitoring $PROM_POD -c prometheus -- \
   promtool tsdb analyze /prometheus
 ```
 
-This outputs: block count, compression ratio, top metric names by series count.
-Use this weekly in production to catch cardinality problems before they cause OOMKills.
+**Actual output (your cluster — healthy baseline):**
+
+```
+Block ID: 01KR7X7NZMZHGFC55QMZ2FBR51
+Duration: 1h59m59.571s
+Total Series: 29802
+Label names: 239
+Postings (unique label pairs): 3826
+Postings entries (total label pairs): 293060
+
+Highest cardinality metric names:
+2750 apiserver_request_duration_seconds_bucket
+2592 apiserver_request_body_size_bytes_bucket
+2390 etcd_request_duration_seconds_bucket
+1664 apiserver_request_sli_duration_seconds_bucket
+1384 apiserver_response_sizes_bucket
+ 573 kubernetes_feature_enabled
+ 540 apiserver_watch_events_sizes_bucket
+```
+
+**Reading this output — what is healthy and what to watch:**
+
+```
+Total Series: 29,802
+  This is your current cardinality — total active time series in the head block.
+  29,802 is completely normal for a fresh Minikube cluster with kube-prometheus-stack.
+  Production targets by cluster size:
+    Small  (< 5 nodes):   50k – 200k series     ← you are well within this
+    Medium (5–50 nodes):  200k – 1M series
+    Large  (50+ nodes):   1M+ series (needs Mimir)
+
+Highest cardinality metrics — why apiserver dominates:
+  apiserver_request_duration_seconds_bucket: 2,750 series
+  This is a histogram with many label combinations:
+    verb × resource × subresource × scope × version × component
+    = large cross-product of label values → many bucket series
+  This is expected and normal — not a cardinality problem.
+  It is just how the Kubernetes API server instruments itself.
+
+Label pairs most involved in churning:
+  namespace=monitoring (34), job=apiserver (31) — these labels are on many
+  frequently-changing metrics. "Churning" means series that appear and
+  disappear (e.g. short-lived pods). High churn increases WAL pressure.
+  34 churning entries for namespace=monitoring is completely normal.
+
+What WOULD be a cardinality problem:
+  Total Series > 500,000 on a single-node Minikube → investigate
+  A single metric with > 10,000 series → label cardinality issue
+  A user_id, request_id, or URL-with-params label appearing in top labels
+  Rapid growth in Total Series without workload growth
+
+Run weekly in production:
+  kubectl exec -n monitoring $PROM_POD -c prometheus -- \
+    promtool tsdb analyze /prometheus | head -20
+  Or query directly: prometheus_tsdb_head_series
+```
+
+Also run a quick cardinality audit in Prometheus UI:
+
+```promql
+# Top 10 metrics by series count — your first cardinality audit query
+topk(10, count by (__name__) ({__name__=~".+"}))
+```
+
+> Expected error if running for < 2 hours:
+> "no blocks found" — this is CORRECT and expected behaviour.
+> The TSDB creates on-disk blocks only when the head block flushes (~every 2 hours).
+> All data before the first flush lives in the in-memory head block only.
+> To verify data IS being collected (even without disk blocks):
+> curl -s 'localhost:9090/api/v1/query?query=prometheus_tsdb_head_series' \
+>  | jq '.data.result[0].value[1]'
+> Expected: a number like "29802" — confirming the head block is active
 
 ---
 
-## Step 12: The Four Golden Signals — Full PromQL Reference
 
-```
-┌───────────────┬──────────────────────────────────────────────────────────────┐
-│  Golden Signal│  PromQL Query                                                │
-├───────────────┼──────────────────────────────────────────────────────────────┤
-│  LATENCY      │  histogram_quantile(                                         │
-│  p99 latency  │    0.99,                                                     │
-│               │    sum by (le) (                                             │
-│               │      rate(                                                   │
-│               │        http_request_duration_seconds_bucket{                 │
-│               │          job="default/test-app/0"                           │
-│               │        }[5m]                                                 │
-│               │      )                                                       │
-│               │    )                                                         │
-│               │  )                                                           │
-│               │  → e.g. 0.042 = 42ms p99                                   │
-│               │  → Alert: > 0.5 (500ms SLO breach)                          │
-├───────────────┼──────────────────────────────────────────────────────────────┤
-│  TRAFFIC      │  sum(                                                        │
-│  requests/sec │    rate(                                                     │
-│               │      http_requests_total{                                    │
-│               │        job="default/test-app/0"                             │
-│               │      }[5m]                                                   │
-│               │    )                                                         │
-│               │  )                                                           │
-│               │  → e.g. 14.2 = 14.2 requests/second across all pods        │
-│               │  → Use for: capacity planning, anomaly detection            │
-├───────────────┼──────────────────────────────────────────────────────────────┤
-│  ERRORS       │  sum(rate(http_requests_total{                               │
-│  error rate   │    job="default/test-app/0", status=~"5.."}[5m]))           │
-│               │  /                                                           │
-│               │  sum(rate(http_requests_total{                               │
-│               │    job="default/test-app/0"}[5m]))                          │
-│               │  → e.g. 0.0 = 0% errors, 0.05 = 5% error rate             │
-│               │  → Alert: > 0.01 (99% success SLO)                         │
-├───────────────┼──────────────────────────────────────────────────────────────┤
-│  SATURATION   │  process_resident_memory_bytes{                              │
-│  memory %     │    job="default/test-app/0"                                 │
-│               │  }                                                           │
-│               │  / (64 * 1024 * 1024)                                       │
-│               │  → e.g. 0.72 = 72% of 64MB limit used                     │
-│               │  → Alert: > 0.85 (OOMKill risk at 85%)                     │
-└───────────────┴──────────────────────────────────────────────────────────────┘
-```
+## Cleanup
 
-Run all four in Prometheus Graph tab and switch to Graph view.
-In Demo 04 (Grafana Dashboards) these become the foundation of your
-first operational dashboard.
+The monitoring stack (`kube-prometheus-stack`) is **shared across all 25 demos**
+in this series — do NOT uninstall it between demos. Only remove the
+demo-specific resources deployed in this demo.
 
----
-
-## Lessons Learned
-
-### The Prometheus Operator Is the Correct Mental Model for Kubernetes
-
-The most important mindset shift from this demo: in Kubernetes, you never edit
-`prometheus.yaml` directly. The Operator reads ServiceMonitor CRDs and generates
-config automatically. When a service is not being scraped, always look at the
-ServiceMonitor and the Operator logs first — not at prometheus.yaml.
+### Per-Demo Cleanup (Run After Every Demo)
 
 ```bash
-# First step when debugging "my service is not being scraped":
+# Remove the test application, Service, and ServiceMonitor
+kubectl delete -f src/test-app/03-servicemonitor.yaml
+kubectl delete -f src/test-app/02-service.yaml
+kubectl delete -f src/test-app/01-deployment.yaml
 
-# 1. Does the ServiceMonitor exist?
-kubectl get servicemonitor -A
+# Remove stress pod if still running
+kubectl delete pod stress-test --ignore-not-found
 
-# 2. Is the ServiceMonitor's selector matching the Service?
-kubectl describe servicemonitor test-app -n default
+# Verify test-app resources are gone
+kubectl get pods -n default -l app=test-app
+kubectl get servicemonitors -n default
 
-# 3. Does the Service have healthy endpoints (pods Ready)?
+# Stop any active port-forwards
+pkill -f "kubectl port-forward" 2>/dev/null || true
+
+# Stop Minikube (preserves the cluster state — fast restart next time)
+minikube stop
+```
+
+Expected after per-demo cleanup:
+```
+No resources found in default namespace.    ← no test-app pods
+No resources found in default namespace.    ← no ServiceMonitors
+✋  Stopping node "minikube"  ...
+🛑  1 node stopped.
+```
+
+> **The kube-prometheus-stack remains installed** in the `monitoring` namespace.
+> When you start the next demo, run `minikube start` and the stack will be
+> running immediately — no reinstall needed.
+
+### Full Teardown (Only When Done With the Entire Series)
+
+Run this **only** when you are completely finished with all 25 demos and
+want to reclaim all disk space and resources.
+
+```bash
+# Step 1: Remove test application if still running
+kubectl delete -f src/test-app/03-servicemonitor.yaml --ignore-not-found
+kubectl delete -f src/test-app/02-service.yaml --ignore-not-found
+kubectl delete -f src/test-app/01-deployment.yaml --ignore-not-found
+kubectl delete pod stress-test --ignore-not-found
+
+# Step 2: Uninstall kube-prometheus-stack
+# Removes: all pods, services, CRDs, RBAC, ConfigMaps, ServiceMonitors
+# Does NOT remove PVCs (by design — prevents accidental data loss on upgrade)
+helm uninstall kube-prometheus-stack -n monitoring
+
+# Step 3: Delete PVCs manually (helm uninstall intentionally leaves these)
+kubectl delete pvc -n monitoring --all
+
+# Step 4: Delete the monitoring namespace
+kubectl delete namespace monitoring
+
+# Step 5: Verify everything is removed
+kubectl get all -n monitoring 2>&1
+kubectl get pvc -n monitoring 2>&1
+kubectl get servicemonitors -A 2>&1 | grep -v "No resources found" || echo "None"
+
+# Step 6: Delete Minikube cluster (frees all disk space)
+minikube delete
+```
+
+Expected after full teardown:
+```
+release "kube-prometheus-stack" uninstalled
+namespace "monitoring" deleted
+No resources found in monitoring namespace.
+No resources found in monitoring namespace.
+None
+🔥  Deleting "minikube" in docker ...
+💀  Removed all traces of the "minikube" cluster.
+```
+
+---
+
+
+## What You Learned
+
+By completing this demo you have achieved the following objectives:
+
+1. ✅ Explained why Prometheus uses a pull model and when Pushgateway is the correct alternative for batch jobs and ephemeral workloads
+2. ✅ Described the TSDB write path from HTTP scrape response through WAL, head block, disk block, and compaction
+3. ✅ Identified all four metric types from a raw `/metrics` endpoint and applied the correct PromQL functions to each
+4. ✅ Calculated label cardinality cost and identified unbounded labels that cause Prometheus OOMKills in production
+5. ✅ Described what the Prometheus Operator does and how ServiceMonitor CRDs replace manual `prometheus.yaml` management
+6. ✅ Explained the difference between `scrape_interval` and `evaluation_interval` and why misalignment causes stale rule evaluation
+7. ✅ Deployed `kube-prometheus-stack` v84.5.0 with a custom values file and verified all components are Running
+8. ✅ Navigated Targets, Graph, Service Discovery, and TSDB Status pages in the Prometheus UI
+9. ✅ Deployed a test application and made it auto-discoverable via ServiceMonitor with zero manual scrape config
+10. ✅ Wrote five PromQL queries covering the four golden signals against real running metrics
+11. ✅ Simulated CPU load with stress-ng and observed Prometheus metrics respond in real time
+12. ✅ Validated the running configuration with `promtool` and interpreted the TSDB analysis output
+
+---
+
+## Interview Prep
+
+**Q1. You are on-call and get paged: "Prometheus is OOMKilled — monitoring is down." You restart the pod and it OOMKills again within 10 minutes. What do you do?**
+
+The immediate priority is to find the cardinality bomb before restarting again. First, increase the Prometheus memory limit temporarily so the pod stays up long enough to investigate: `kubectl set resources statefulset prometheus-kube-prometheus-stack-prometheus -n monitoring --limits=memory=4Gi`. Once the pod is Running, query `topk(20, count by (__name__)({__name__=~".+"}))` in the Prometheus UI — this shows the top 20 metrics by time series count. Look for any single metric exceeding 10,000 series; that is almost always the culprit. Then check recent ServiceMonitor changes: `kubectl get events -n monitoring --sort-by=.lastTimestamp | grep ServiceMonitor`. A recently added label with unbounded values (user_id, request_id, URL with query params) will appear in the top 20 list with an obviously disproportionate series count. Drop the offending metric or label using `metricRelabelings` in the ServiceMonitor while the application team fixes the instrumentation.
+
+**Q2. A developer says "my service isn't showing up in Prometheus Targets — I created the ServiceMonitor two minutes ago." Walk them through your diagnostic process.**
+
+Start with five checks in order. First: does the ServiceMonitor exist and does it match a Service? `kubectl get servicemonitor -n <namespace>` and `kubectl describe servicemonitor <name> -n <namespace>` — look at the selector and confirm there is a Service with those exact labels. Second: does that Service have healthy Endpoints? `kubectl get endpoints <service-name> -n <namespace>` — if the Endpoints list is empty, the pods are not Ready. Third: is `serviceMonitorSelectorNilUsesHelmValues` set to `false` in values.yaml? If it is `true` (the default), Prometheus only discovers ServiceMonitors with the label `release: kube-prometheus-stack` — a missing label silently drops the ServiceMonitor. Fourth: check the Prometheus Service Discovery page (`/service-discovery`) — it shows endpoints Prometheus found but chose not to scrape, which is different from not finding them at all. Fifth: check the Operator logs: `kubectl logs -n monitoring -l app.kubernetes.io/name=prometheus-operator --tail=100` — the Operator logs CRD reconciliation events including errors.
+
+**Q3. What is the difference between `scrape_interval` and `evaluation_interval`? What breaks if `evaluation_interval` is set to 5s when `scrape_interval` is 60s?**
+
+`scrape_interval` controls how often Prometheus sends `HTTP GET /metrics` to each target — it governs data collection. `evaluation_interval` controls how often Prometheus runs every alerting and recording rule against the stored data — it governs alert detection. They run as two independent clocks. If `evaluation_interval` is set to `5s` and `scrape_interval` to `60s`, Prometheus evaluates all alert rules every 5 seconds but only receives fresh data every 60 seconds. For 55 of every 60 seconds, rules evaluate against data that is up to 60 seconds stale. This means alert firing latency is governed by `scrape_interval` anyway, so the fast `evaluation_interval` wastes CPU with no benefit. More critically, recording rules produce repeated identical values — any downstream consumer relying on recording rule freshness gets misleading consistency. Set both to the same value: `15s` for standard production, matched in `global.scrape_interval` and `global.evaluation_interval`.
+
+**Q4. A teammate proposes using `user_id` as a Prometheus label to enable per-user request rate tracking. How do you respond?**
+
+Push back immediately and explain why this destroys Prometheus. Each unique combination of metric name and all label values is a separate time series in the TSDB head block, consuming approximately 3 KB of RAM. With `user_id` as a label, `http_requests_total` alone produces: number of services × number of HTTP methods × number of status codes × number of active users time series. For a modest 100,000-user platform with five services and six status codes, that is 5 × 4 × 6 × 100,000 = 12,000,000 series from one metric — roughly 36 GB of RAM. Prometheus OOMKills. The correct approach for per-user tracking is logs or distributed traces (Loki or Tempo), which are purpose-built for high-cardinality event data. Prometheus is built for low-cardinality aggregate metrics. The rule for any proposed label: can you enumerate every possible value? If no, it does not belong in Prometheus.
+
+**Q5. After running `helm upgrade` to update the kube-prometheus-stack chart version, you notice that all Alertmanager silences that were active before the upgrade are gone. What happened and how do you prevent this in future?**
+
+Silences in Alertmanager are stored in memory by default. When the pod restarts during a `helm upgrade`, the in-memory state is lost. The fix is a `storage` block in `alertmanager.alertmanagerSpec` in `values.yaml` that provisions a PersistentVolumeClaim for the silence state database. With a PVC mounted, Alertmanager writes silence state to disk on every change and reads it back on startup — the pod restart during upgrade becomes a non-event for silences. In the current demo values.yaml, this is configured as a 1Gi PVC. For any Alertmanager deployment that manages real on-call silences, this PVC is non-optional: losing silences during upgrades means re-paging on-call engineers for every alert they already acknowledged and suppressed.
+
+---
+
+
+## Break-Fix Scenario
+
+> **Rules:** No hints are given. Diagnose using only the error output shown.
+> Attempt a diagnosis before opening the answer.
+
+---
+
+### Scenario: ServiceMonitor applied — target never appears in Prometheus
+
+You have deployed the test application and applied the ServiceMonitor. After
+waiting 5 minutes, the target does not appear in the Prometheus Targets page.
+You run the following commands and get this output:
+
+```bash
+kubectl get servicemonitor -n default
+```
+```
+NAME       AGE
+test-app   4m52s
+```
+
+```bash
 kubectl get endpoints test-app -n default
+```
+```
+NAME       ENDPOINTS                                            AGE
+test-app   10.244.0.12:9797,10.244.0.13:9797,10.244.0.14:9797   4m50s
+```
 
-# 4. Is the target visible in Prometheus with an error?
-# → http://localhost:9090/targets
-# Read the error message on the target row
-
-# 5. What is the Operator saying?
+```bash
 kubectl logs -n monitoring \
   -l app.kubernetes.io/name=prometheus-operator \
-  --tail=50
+  --tail=20
 ```
-
-### rate() Requires a Sufficient Range Window
-
 ```
-WRONG: rate(http_requests_total[30s])
-  scrape_interval = 15s → 30s window has only 2 data points
-  rate() needs at least 4 points for statistical reliability
-  Result: erratic, unreliable, misleading values
-
-CORRECT: rate(http_requests_total[5m])
-  5m window = approximately 20 data points at 15s scrape interval
-  Stable, reliable rate calculation
-
-Rule: range window ≥ 4 × scrape_interval
-Standard ranges for 15s scrape: [1m], [5m], [15m], [1h]
+level=info msg="ServiceMonitor selected" servicemonitor=default/test-app
+level=info msg="Updating Prometheus configuration"
+level=info msg="Reloading Prometheus" url=http://prometheus-operated:9090/-/reload
+level=info msg="Prometheus reloaded"
 ```
-
-### promtool Must Be Part of Your CI/CD Pipeline
-
-Every Prometheus rule file change should pass through `promtool check rules` before
-deployment. This catches invalid PromQL syntax, malformed YAML, duplicate rule names,
-and unit test failures. Adding it to a GitHub Actions workflow costs 30 seconds of
-CI time and prevents monitoring outages caused by bad alerting rule deploys.
-
-```yaml
-# GitHub Actions step example
-- name: Validate Prometheus rules
-  run: |
-    promtool check config prometheus.yaml
-    promtool check rules rules/*.yaml
-```
-
-### PVCs Are Not Deleted by helm uninstall — Always Clean Them Manually
 
 ```bash
-# WRONG cleanup (leaves PVCs consuming disk):
-helm uninstall kube-prometheus-stack -n monitoring
-
-# CORRECT cleanup:
-helm uninstall kube-prometheus-stack -n monitoring
-kubectl delete pvc -n monitoring --all    # ← required manually
-kubectl delete namespace monitoring
+curl -s localhost:9090/api/v1/targets \
+  | jq '.data.activeTargets[] | select(.labels.job | test("test-app")) | .health'
+```
+```
+(no output)
 ```
 
-Helm preserves PVCs on uninstall by design — it protects your TSDB data during
-upgrades. In a demo environment with limited disk, always delete PVCs explicitly.
-
-### Statistic Choice Changes the Story Completely
-
+```bash
+helm get values kube-prometheus-stack -n monitoring | grep -A2 serviceMonitor
 ```
-CPUUtilization Average = 45%  →  "looks fine"
-CPUUtilization Maximum = 98%  →  "threads were starved, users felt latency"
-
-Memory Average  = 60%  →  "comfortable headroom"
-Memory Maximum  = 95%  →  "we were minutes from OOMKill"
-
-Use Average for: capacity planning, trend analysis, cost estimation
-Use Maximum for: incident investigation, finding peak saturation
-Use p99 for:     SLO alerting, latency SLOs, understanding tail behaviour
+```
+serviceMonitorSelectorNilUsesHelmValues: true
 ```
 
-### Troubleshooting — Port-Forward Connection Refused
+**What is wrong and what is the fix?**
 
+<details>
+<summary>Answer</summary>
+
+**Root cause:** `serviceMonitorSelectorNilUsesHelmValues: true` is set in the
+Helm values. This means Prometheus only discovers ServiceMonitors that carry the
+label `release: kube-prometheus-stack`. The test-app ServiceMonitor does not have
+this label, so Prometheus silently ignores it despite the Operator seeing and
+processing the CRD.
+
+The Operator logs confirm it selected and reloaded — the Operator itself works
+correctly. The problem is the Prometheus selector filter applied after the reload,
+which rejects the ServiceMonitor at scrape target generation time.
+
+**Evidence trail:**
+- ServiceMonitor exists ✅
+- Endpoints are healthy (3 pod IPs) ✅
+- Operator selected it and reloaded Prometheus ✅
+- Target still absent from active targets ← selector is filtering it out
+- `serviceMonitorSelectorNilUsesHelmValues: true` ← the cause
+
+**Fix:** Update `values.yaml` and upgrade:
+
+```yaml
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false  # was true
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
 ```
-Error: "error forwarding port 9090: ... connection refused"
 
-Cause 1: Pod is not yet Running
-  kubectl get pods -n monitoring → check STATUS column
-  kubectl describe pod <pod-name> -n monitoring → check Events section
-
-Cause 2: Wrong service name
-  kubectl get svc -n monitoring  → list actual service names
-  Chart default: kube-prometheus-stack-prometheus (not "prometheus")
-
-Cause 3: Port already in use locally
-  lsof -i :9090  → check what is using port 9090 on your machine
-  Fix: kubectl port-forward ... 19090:9090
-  Then open http://localhost:19090 instead
-
-Cause 4: Port-forward process died
-  Check if the kubectl port-forward process is still running
-  ps aux | grep port-forward
-  Restart it if gone
+```bash
+helm upgrade kube-prometheus-stack \
+  prometheus-community/kube-prometheus-stack \
+  --version 84.5.0 \
+  -n monitoring \
+  -f src/values.yaml
 ```
+
+After upgrade, wait 30 seconds and verify:
+
+```bash
+curl -s localhost:9090/api/v1/targets \
+  | jq '[.data.activeTargets[] | select(.labels.job | test("test-app")) | {pod: .labels.pod, health: .health}]'
+```
+
+Expected: three entries with `"health": "up"` — one per test-app pod.
+
+</details>
 
 ---
 
-## What You Built
+## Key Takeaways
 
-```
-monitoring namespace:
-  ✅ Prometheus 3.3.1 (StatefulSet, 10Gi PVC, 10d retention, native histograms)
-  ✅ Prometheus Operator v0.90.1 (watching all CRDs cluster-wide)
-  ✅ Alertmanager 0.28.1 (StatefulSet, 1Gi PVC)
-  ✅ Grafana 12.3.0 (Deployment, 1Gi PVC, unified alerting)
-  ✅ Node Exporter 1.11.1 (DaemonSet, host metrics from /proc and /sys)
-  ✅ kube-state-metrics 2.18.0 (Kubernetes API object state)
+1. **Prometheus uses a pull model — the scraper reaches out to targets, not the other way around.** A scrape failure is immediately explicit as `up{...} = 0`, rather than silent data absence. Use Pushgateway only for batch jobs and ephemeral workloads with no stable network address.
 
-default namespace:
-  ✅ podinfo 6.7.1 (Deployment, 3 replicas, Prometheus metrics on port 9797)
-  ✅ ServiceMonitor CRD (auto-discovered and scraping in < 30 seconds)
+2. **Never use a raw counter value in an alert or dashboard — always wrap with `rate()` or `increase()`.** A counter only ever increases; the raw cumulative value is meaningless for alerting. `rate(http_requests_total[5m])` gives a per-second rate that actually represents something a threshold can be set on.
 
-Skills demonstrated:
-  ✅ Pull model internals — why and when pull vs push
-  ✅ TSDB write path — WAL, head block, disk blocks, compaction, retention
-  ✅ Four metric types — counter, gauge, histogram, summary with real examples
-  ✅ Labels and cardinality — calculation, limits, and production rules
-  ✅ Prometheus Operator — CRD-based self-service, zero manual config
-  ✅ scrape_interval vs evaluation_interval — two independent clocks
-  ✅ ServiceMonitor CRD — auto-discovery of new applications
-  ✅ Five PromQL queries — including all four golden signals
-  ✅ promtool — config validation and TSDB cardinality analysis
-  ✅ Stress testing — watching metrics react to real workload
-```
+3. **Label cardinality is the primary cause of Prometheus OOMKills in production.** Every unique combination of metric name and label values is a separate time series consuming approximately 3 KB of RAM. Never use `user_id`, `request_id`, or any unbounded label — use only labels whose complete set of values you can enumerate in advance.
+
+4. **The Prometheus Operator eliminates all manual `prometheus.yaml` management.** A ServiceMonitor CRD created by an application team triggers automatic scrape config generation and reload within 30 seconds — no platform team involvement, no pod restart, no stale IP as pods are replaced.
+
+5. **Set `scrape_interval` and `evaluation_interval` equal, and keep both at `15s`.** If `evaluation_interval` is shorter than `scrape_interval`, alerting rules evaluate against stale data for most of their cycles. Align both clocks so every rule evaluation runs against fresh data.
+
+6. **PVCs are not deleted by `helm uninstall` — always clean them manually in demo environments.** Helm preserves PVCs on uninstall by design to protect TSDB data during upgrades. In a demo environment, `kubectl delete pvc -n monitoring --all` is a required extra step after `helm uninstall`.
+
+7. **`promtool check rules` must be part of every CI/CD pipeline that touches alert or recording rules.** The admission webhook validates PromQL at apply time, but `promtool` catches issues earlier — in the pipeline, before the CRD is even submitted to Kubernetes. A bad alerting rule that silently disables an entire rule group is worse than no alerting at all.
+
+8. **`rate()` range window must be at least 4× the scrape_interval for statistical reliability.** With `scrape_interval: 15s`, use `[1m]` as the minimum window. `rate(http_requests_total[30s])` gives only 2 data points — erratic and misleading. Standard safe windows: `[1m]`, `[5m]`, `[15m]`, `[1h]`.
+
+9. **When debugging a missing scrape target, the Prometheus Operator and the Prometheus selector are two separate failure points.** The Operator can successfully detect, reload, and log a ServiceMonitor while Prometheus simultaneously rejects it via the `serviceMonitorSelectorNilUsesHelmValues` filter. Always check both the Operator logs and the Helm values when a target is missing.
 
 ---
 
-## Quick Reference — Commands
+## Quick Commands Reference
 
 | What | Command |
 |---|---|
@@ -2186,70 +3451,8 @@ Skills demonstrated:
 
 ---
 
-## Cleanup — Complete Teardown
 
-Run all steps in order. This removes every resource from this demo.
-**Run this before shutting down for the night to avoid resource waste.**
-
-```bash
-# Step 1: Remove test application and its ServiceMonitor
-kubectl delete -f src/test-app/servicemonitor.yaml
-kubectl delete -f src/test-app/service.yaml
-kubectl delete -f src/test-app/deployment.yaml
-
-# Step 2: Remove stress pod if still running
-kubectl delete pod stress-test --ignore-not-found
-
-# Step 3: Uninstall the Helm release
-# Removes: pods, services, ServiceMonitors, PrometheusRules, CRDs, RBAC, ConfigMaps
-# Does NOT remove: PersistentVolumeClaims (by design — see Lessons Learned)
-helm uninstall kube-prometheus-stack -n monitoring
-
-# Step 4: Delete PersistentVolumeClaims manually
-# Critical: helm uninstall does not delete PVCs — they survive intentionally
-# to protect TSDB data on accidental uninstall. Delete them manually for demos.
-kubectl delete pvc -n monitoring --all
-
-# Step 5: Delete the monitoring namespace and any remaining resources
-kubectl delete namespace monitoring
-
-# Step 6: Verify everything is removed
-echo "--- Remaining pods ---"
-kubectl get pods -n monitoring 2>&1
-
-echo "--- Remaining PVCs ---"
-kubectl get pvc -n monitoring 2>&1
-
-echo "--- Remaining ServiceMonitors ---"
-kubectl get servicemonitors -A 2>&1 | grep -v "No resources found" || echo "None"
-
-# Step 7: Stop Minikube (preserves cluster state on disk — fast restart next time)
-minikube stop
-
-# Optional Step 8: Delete Minikube cluster entirely (frees all disk space)
-# Do this if you are done with the project or want a completely clean start
-# minikube delete
-```
-
-**Expected final output:**
-```
-release "kube-prometheus-stack" uninstalled
-persistentvolumeclaim "prometheus-..." deleted
-persistentvolumeclaim "alertmanager-..." deleted
-namespace "monitoring" deleted
---- Remaining pods ---
-No resources found in monitoring namespace.
---- Remaining PVCs ---
-No resources found in monitoring namespace.
---- Remaining ServiceMonitors ---
-None
-✋  Stopping node "minikube"  ...
-🛑  1 node stopped.
-```
-
----
-
-## What's Next
+## Next Demo
 
 **Demo 02 — PromQL: From Selectors to Production-Grade Queries**
 
@@ -2263,11 +3466,12 @@ queries for dashboard performance.
 
 ---
 
+
 ## References
 
 | Resource | URL |
 |---|---|
-| Prometheus 3.x Documentation | https://prometheus.io/docs/prometheus/3.3/ |
+| Prometheus 3.x Documentation | https://prometheus.io/docs/prometheus/latest/ |
 | kube-prometheus-stack Helm Chart | https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack |
 | Prometheus Operator API Reference | https://prometheus-operator.dev/docs/api-reference/api/ |
 | ArtifactHub — chart versions | https://artifacthub.io/packages/helm/prometheus-community/kube-prometheus-stack |
@@ -2280,3 +3484,194 @@ queries for dashboard performance.
 | promtool CLI reference | https://prometheus.io/docs/prometheus/latest/command-line/promtool/ |
 | Node Exporter collectors list | https://github.com/prometheus/node_exporter#collectors |
 | Prometheus Native Histograms | https://prometheus.io/docs/prometheus/latest/feature_flags/#native-histograms |
+
+---
+
+
+## Appendix — Anki Cards
+
+**01-prometheus-fundamentals-anki.csv:**
+
+```
+#deck:Opensource Observability Labs::Phase 1 - Foundations::01-prometheus-fundamentals
+#separator:Comma
+#columns:Front,Back,Tags
+"You deploy a new microservice and create a ServiceMonitor CRD. Nothing appears in Prometheus Targets after 5 minutes. What are the first three things you check?","1) ServiceMonitor selector matches a real Service label: kubectl describe servicemonitor <name>. 2) serviceMonitorSelectorNilUsesHelmValues is false — if true, Prometheus only discovers ServiceMonitors with the label release: kube-prometheus-stack. 3) The Service has healthy Endpoints (pods are Ready): kubectl get endpoints <service> -n <namespace>. If endpoints are empty, the pods are not Ready and there is nothing for the Operator to generate a scrape target from.","demo01,servicemonitor,operator,troubleshooting"
+"You query http_requests_total in Prometheus and get 482931. Is this useful for alerting? What should you use instead?","No — a raw counter is a monotonically increasing cumulative total since process start. It tells you nothing about current rate and cannot have a meaningful alert threshold. Use rate(http_requests_total[5m]) to get a per-second rate over the last 5 minutes, or increase(http_requests_total[1h]) for total new requests in an hour. rate() handles counter resets (pod restarts) automatically.","demo01,counter,promql,rate"
+"A colleague proposes adding user_id as a Prometheus label to track per-user request rates. You have 80,000 active users. What happens and what is the correct approach?","With user_id as a label on http_requests_total across 5 services, 4 HTTP methods, 6 status codes: 5 × 4 × 6 × 80,000 = 9,600,000 time series from one metric. At ~3 KB RAM per series in the head block: ~29 GB RAM. Prometheus OOMKills. Correct approach: per-user tracking belongs in logs (Loki) or distributed traces (Tempo) — both handle high-cardinality event data. Prometheus is for low-cardinality aggregate metrics. Rule: if you cannot enumerate every possible label value, it does not belong in Prometheus.","demo01,cardinality,labels,production"
+"What is the difference between scrape_interval and evaluation_interval? What breaks if evaluation_interval is set shorter than scrape_interval?","scrape_interval: how often Prometheus sends HTTP GET /metrics to each target (data collection). evaluation_interval: how often Prometheus runs all alerting and recording rules against stored data (alert detection). They are independent clocks. If evaluation_interval (e.g. 5s) is shorter than scrape_interval (e.g. 60s), rules evaluate against stale data for 55 of every 60 seconds. Alert firing latency is still governed by scrape_interval. Recording rules produce repeated identical values. Best practice: set both equal at 15s.","demo01,scrape-interval,evaluation-interval,configuration"
+"You run helm uninstall kube-prometheus-stack -n monitoring. Later you try to reinstall and get a PVC conflict. Why?","Helm intentionally does not delete PVCs on uninstall — this protects TSDB data during chart upgrades (a rolling upgrade would otherwise destroy metric history). After helm uninstall you must manually run: kubectl delete pvc -n monitoring --all. Then kubectl delete namespace monitoring if doing a full cleanup. Always do this in demo environments; in production, decide deliberately whether to preserve the TSDB data before deleting PVCs.","demo01,pvc,cleanup,helm"
+"Why does Prometheus scrape pod IPs directly rather than the Service ClusterIP?","If Prometheus scraped the Service ClusterIP, kube-proxy would load-balance each scrape to a random pod. Scrape 1 might hit pod A, scrape 2 pod B, scrape 3 pod A again. The resulting time series would mix data from different pods — useless for per-pod metrics and confusing for aggregation. By scraping pod IPs directly (obtained from the Kubernetes Endpoints API via the Operator), each time series is a consistent, continuous stream from exactly one pod.","demo01,scraping,pod-ip,operator"
+"What does serviceMonitorSelectorNilUsesHelmValues: false do and why is it set in this demo?","When true (default): Prometheus only discovers ServiceMonitors that have the label release: kube-prometheus-stack (the Helm release name). Any ServiceMonitor without that label is silently ignored — the developer's service is never scraped and no error is shown. Setting false makes Prometheus discover ALL ServiceMonitors cluster-wide regardless of labels. This enables self-service monitoring: application teams create ServiceMonitors in their own namespaces without needing to know the Helm release name. RBAC on the servicemonitors resource controls access in production.","demo01,servicemonitorselector,configuration,operator"
+"You look at the Prometheus Targets page and see kube-controller-manager, kube-etcd, and kube-scheduler all showing DOWN. Is this a problem? What is the root cause?","Not a problem — this is expected on Minikube. These control plane components bind their metrics ports to 127.0.0.1 (localhost on the Minikube VM). Prometheus runs inside a pod and cannot reach 127.0.0.1 on the host node — from the pod's network namespace, 127.0.0.1 is the pod itself. All 25 demos in this series work correctly without these three targets. Fix is optional: SSH into the Minikube VM and change --bind-address=127.0.0.1 to 0.0.0.0 in the static pod manifests.","demo01,minikube,control-plane,targets"
+"A histogram metric http_request_duration_seconds_bucket is showing in /metrics. How do you calculate p99 latency from it in PromQL?","histogram_quantile(0.99, sum by (le)(rate(http_request_duration_seconds_bucket[5m]))). The steps: rate() converts cumulative bucket counters to per-second rates over the window. sum by (le) aggregates across all pod instances while keeping the le bucket boundary label (required by histogram_quantile). histogram_quantile(0.99, ...) interpolates between bucket boundaries to estimate the value below which 99% of requests fall. Design bucket boundaries to bracket your SLO threshold for accurate interpolation.","demo01,histogram,p99,promql"
+"What is the TSDB write path? Trace a scraped metric from HTTP response to disk block.","1. Prometheus sends HTTP GET /metrics to the target. 2. Target returns OpenMetrics text format. 3. Prometheus parses the response into a raw sample list in memory. 4. Each sample is appended to the WAL (Write-Ahead Log) immediately — sequential write, provides crash safety. 5. Samples are stored in the in-memory head block (covers ~2 most recent hours). 6. Every 2 hours, the head block is flushed to disk as a new immutable block with chunks + index + metadata. 7. Background compaction merges small blocks progressively: 2h → 6h → 24h → 48h. 8. Blocks older than retention.time are deleted.","demo01,tsdb,write-path,storage"
+"When should you use Pushgateway instead of the standard Prometheus pull model?","Three scenarios where pull fails: 1) Short-lived batch jobs — a Kubernetes Job that runs for 45 seconds may complete between 15-second scrapes, never captured. Job pushes metrics to Pushgateway on completion; Prometheus scrapes Pushgateway on schedule. 2) Ephemeral workloads with no stable network address — AWS Lambda runs for 50ms with no fixed IP; Prometheus cannot reach it. 3) Strict network isolation — app is in a private subnet with no inbound access to Prometheus. Warning: Pushgateway has no TTL by default — always delete metrics via the Pushgateway API when the job completes.","demo01,pushgateway,pull-model,batch-jobs"
+"What is the promtool duplicate rule warning you see on a fresh kube-prometheus-stack install and should you fix it?","The warning: 'lint error 1 duplicate rule(s) found. Metric: code_verb:apiserver_request_total:increase1h'. This is a known upstream issue in the chart-bundled PrometheusRule files — the same recording rule exists twice across different rule groups in the chart. It is a lint warning only; Prometheus loads all rules successfully. It does not affect any demo functionality. Your own custom rules will pass promtool cleanly. Check the prometheus-community/helm-charts GitHub issues for current fix status. Do not suppress promtool in CI because of this — it will be fixed upstream.","demo01,promtool,known-issue,bundled-rules"
+```
+
+---
+
+
+## Appendix — Quiz
+
+**01-prometheus-fundamentals-quiz.md:**
+
+````markdown
+# Quiz — Demo 01: Prometheus Architecture, Data Model & First Scrape
+
+> One correct answer per question unless stated otherwise.
+> Target: 80% or above before moving to Demo 02.
+
+| Score | Action |
+|---|---|
+| 100% | Import Anki CSV and move to Demo 02 |
+| 80–90% | Review wrong answers, then proceed |
+| 60–70% | Re-read relevant sections, retry quiz |
+| Below 60% | Re-read full demo before proceeding |
+
+---
+
+**Q1. You create a ServiceMonitor in the `payments` namespace. After 10 minutes, the service still does not appear in Prometheus Targets. A colleague suggests checking `serviceMonitorSelectorNilUsesHelmValues`. What does this setting control?**
+
+A. Whether Prometheus scrapes pod IPs or Service ClusterIPs
+B. Whether Prometheus discovers ServiceMonitors based on a required Helm release label
+C. Whether the Prometheus Operator watches namespaces outside `monitoring`
+D. Whether `scrape_interval` is applied per ServiceMonitor or globally
+
+<details>
+<summary>Answer</summary>
+
+**B** — When `serviceMonitorSelectorNilUsesHelmValues: true` (the default), Prometheus only discovers ServiceMonitors that carry the label `release: kube-prometheus-stack`. Any ServiceMonitor without that label is silently ignored — no scraping, no error. Setting it to `false` makes Prometheus discover all ServiceMonitors cluster-wide regardless of labels.
+
+Trap A: Prometheus always scrapes pod IPs directly (via the Endpoints API), not the ClusterIP — this is unrelated to this setting. Trap C: Namespace watching is controlled by `namespaceSelector` in the ServiceMonitor spec, not this setting. Trap D: `scrape_interval` is a separate setting in `prometheusSpec` or the ServiceMonitor `endpoints[].interval`.
+
+</details>
+
+---
+
+**Q2. You query `http_requests_total{job="order-api"}` in Prometheus and get the value `8,291,033`. You want to alert when the error rate exceeds 1%. Which PromQL expression is correct?**
+
+A. `http_requests_total{status=~"5.."} > 0.01`
+B. `rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.01`
+C. `increase(http_requests_total{status=~"5.."}[5m]) > 0.01`
+D. `http_requests_total{status=~"5.."} / http_requests_total > 0.01`
+
+<details>
+<summary>Answer</summary>
+
+**B** — This calculates the per-second rate of 5xx errors divided by the per-second rate of all requests, giving the error fraction. `rate()` is required because `http_requests_total` is a counter — it only ever increases, and the raw value is a meaningless cumulative total since process start. Dividing rates gives the fraction of requests that are errors.
+
+Trap A: Comparing a raw counter to 0.01 is meaningless — the counter is in the millions. Trap C: `increase()` gives total new errors in the window, not a fraction of requests. Trap D: Dividing raw counters gives the fraction of total historical errors to total historical requests — a meaningless ratio that converges to a constant as counters grow.
+
+</details>
+
+---
+
+**Q3. An engineer proposes adding `session_id` as a label to all HTTP metrics to enable per-session debugging. Your platform has 500,000 daily active sessions. What is the primary concern?**
+
+A. Prometheus does not support string labels longer than 64 characters
+B. Session IDs are not stable across pod restarts and will confuse rate() calculations
+C. Each unique session_id creates a separate time series, potentially creating millions of series and OOMKilling Prometheus
+D. The ServiceMonitor spec does not allow custom label injection
+
+<details>
+<summary>Answer</summary>
+
+**C** — Cardinality explosion. With `session_id` as a label on `http_requests_total` across 5 services, 4 methods, 6 status codes, and 500,000 sessions: 5 × 4 × 6 × 500,000 = 60,000,000 time series. At ~3 KB each, that is ~180 GB of RAM — Prometheus OOMKills immediately and monitoring disappears. High-cardinality per-event data belongs in logs (Loki) or traces (Tempo), not Prometheus.
+
+Trap A: Prometheus does not have a documented 64-character label length limit as a practical concern. Trap B: Counter resets are handled by `rate()` gracefully — this is not the concern. Trap D: Labels can be injected via `relabelings` — this is technically possible, which makes the cardinality problem worse, not better.
+
+</details>
+
+---
+
+**Q4. `scrape_interval` is set to `60s` and `evaluation_interval` is set to `10s`. You have an alerting rule: `expr: up == 0 for: 30s`. A target goes down at t=0. When does the alert fire?**
+
+A. At t=10s — the evaluation clock runs every 10 seconds
+B. At t=30s — the `for: 30s` duration is satisfied
+C. At t=60s — Prometheus only knows the target is down after the first missed scrape at t=60s
+D. At t=90s — the `for: 30s` window starts after the first missed scrape
+
+<details>
+<summary>Answer</summary>
+
+**D** — Prometheus cannot know a target is down until it misses a scrape. With `scrape_interval: 60s`, the first missed scrape is detected at t=60s when `up` becomes 0. The `for: 30s` clause then requires the alert to stay in Pending state for 30 more seconds before firing. So the alert fires at approximately t=90s. The `evaluation_interval: 10s` does not help here — evaluating stale data faster does not reveal that the target is down sooner.
+
+Trap A: Evaluation runs every 10 seconds but against data from the last scrape — which is still from before the target went down. Trap B: The `for: 30s` clock only starts after the condition is first true (after t=60s). Trap C: The alert enters Pending state at t=60s but does not fire until the for duration elapses.
+
+</details>
+
+---
+
+**Q5. You run `helm uninstall kube-prometheus-stack -n monitoring` to do a clean reinstall. After reinstalling, Prometheus has no historical data. What went wrong?**
+
+A. `helm uninstall` deleted the Prometheus StatefulSet and its PVC
+B. `helm uninstall` does not delete PVCs by design, but the old PVC was not mounted to the new install because it had a different name
+C. `helm uninstall` deleted the PVC because `--purge` was implied
+D. The TSDB data was in the pod's ephemeral storage, not a PVC — retention settings were not configured in values.yaml
+
+<details>
+<summary>Answer</summary>
+
+**D** — If `storageSpec` was not configured in `values.yaml`, the TSDB lives in the pod's ephemeral container filesystem. When the StatefulSet is deleted by `helm uninstall`, the pod and its ephemeral storage are gone. Helm does preserve PVCs on uninstall by design — but only if a PVC existed in the first place. Without the `storageSpec` block, no PVC is created, and there is no data to preserve.
+
+Trap A: Helm does not delete PVCs on uninstall — this is a deliberate Helm design choice. Trap B: PVC names are deterministic based on chart naming conventions — a reinstall would mount the same PVC if it existed. Trap C: There is no `--purge` implied in `helm uninstall`; the flag was removed in Helm 3 (it was a Helm 2 concept).
+
+</details>
+
+---
+
+**Q6. You want to calculate p99 request latency from a histogram metric. Which PromQL expression is correct?**
+
+A. `avg(http_request_duration_seconds_sum / http_request_duration_seconds_count)`
+B. `histogram_quantile(0.99, http_request_duration_seconds_bucket)`
+C. `histogram_quantile(0.99, sum by (le)(rate(http_request_duration_seconds_bucket[5m])))`
+D. `quantile(0.99, http_request_duration_seconds)`
+
+<details>
+<summary>Answer</summary>
+
+**C** — This is the correct full expression. `rate()` converts the cumulative bucket counters to per-second rates over the window (required — raw histograms are counters). `sum by (le)` aggregates across all pod instances while preserving the `le` label that `histogram_quantile` requires to identify bucket boundaries. `histogram_quantile(0.99, ...)` interpolates between the bucket boundaries.
+
+Trap A: `_sum / _count` gives the average (mean) latency — not p99. Mean latency hides tail behaviour. Trap B: This would fail or produce wrong results — `http_request_duration_seconds_bucket` is a counter and must be wrapped in `rate()` first; also missing `sum by (le)` across pods. Trap D: `quantile()` is an aggregation operator for gauge vectors, not a function for histograms.
+
+</details>
+
+---
+
+**Q7. After running `kubectl apply -f 03-servicemonitor.yaml`, how long does it typically take for the new target to appear in Prometheus Targets, and what happens during that time?**
+
+A. Immediately — the API call to Prometheus happens synchronously when you apply the manifest
+B. Up to 5 minutes — Prometheus checks for new ServiceMonitors on its scrape cycle
+C. Within 30 seconds — the Operator detects the new CRD, queries the Endpoints API, regenerates prometheus.yaml, and triggers a hot reload via /-/reload
+D. At the next scrape_interval boundary — Prometheus and the Operator are synchronised on the same clock
+
+<details>
+<summary>Answer</summary>
+
+**C** — The Prometheus Operator watches the Kubernetes API for changes to `servicemonitors.monitoring.coreos.com` resources. When a new ServiceMonitor is created, the Operator reconciles within seconds: it queries the Endpoints API for pods matching the selector, generates a new `prometheus.yaml` scrape config, writes it to a ConfigMap, and the config-reloader sidecar POSTs to Prometheus `/-/reload`. Prometheus reloads config without restarting. The total time is typically under 30 seconds.
+
+Trap A: There is no synchronous API call — the Operator uses a Kubernetes watch (event-driven), not polling. Trap B: The Operator does not wait for scrape cycles — it reconciles within seconds of the CRD creation event. Trap D: The Operator and scrape_interval clocks are independent.
+
+</details>
+
+---
+
+**Q8. You look at the TSDB Status page and see Total Series: 850,000 on a 3-node Minikube cluster. The top metric by series count is `http_requests_total` with 620,000 series. What is the most likely cause?**
+
+A. The scrape_interval is too short — more frequent scrapes create more series
+B. A label with unbounded values (such as user_id, request_id, or URL with query parameters) was added to http_requests_total
+C. There are too many ServiceMonitors — each one creates additional time series
+D. The retention period is too long — older series accumulate and inflate the count
+
+<details>
+<summary>Answer</summary>
+
+**B** — A single metric with 620,000 series is a textbook cardinality explosion caused by an unbounded label. Typical bounded labels produce tens to hundreds of series per metric. 620,000 series from one metric means a label value is growing with each new user, request, session, or URL. Check `topk(10, count by (label_name)({__name__="http_requests_total"}))` to find which label has the most unique values.
+
+Trap A: `scrape_interval` affects how many data points are stored per series, not how many series exist. A shorter interval adds more samples to existing series, not new series. Trap C: ServiceMonitors add scrape targets (instances), which adds a bounded number of series proportional to the number of pods — not 620,000 from one metric. Trap D: Retention controls how long old data is kept, not how many active series exist.
+
+</details>
+
+````

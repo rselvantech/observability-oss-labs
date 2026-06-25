@@ -8,6 +8,7 @@
 # ── Prometheus ───────────────────────────────────────────────────────────────
 prometheus:
   prometheusSpec:
+
     # How often Prometheus scrapes each target.
     # 15s is the production standard: fine enough for alerting,
     # coarse enough to keep data volume manageable.
@@ -61,6 +62,7 @@ prometheus:
 # ── Alertmanager ─────────────────────────────────────────────────────────────
 alertmanager:
   alertmanagerSpec:
+
     # Persist silence state across restarts.
     # Without this, all configured silences are lost when the pod restarts.
     storage:
@@ -81,6 +83,7 @@ alertmanager:
 
 # ── Grafana ───────────────────────────────────────────────────────────────────
 grafana:
+
   # Admin credentials.
   # In production: use adminCredentialsSecret to reference a Kubernetes Secret.
   # Never put credentials in values.yaml in a real environment.
